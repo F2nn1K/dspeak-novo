@@ -1,0 +1,19 @@
+{
+  "name": "dspeak",
+  "version": "2.0.0",
+  "description": "DSpeak — chat de texto e voz em tempo real (estilo Discord)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "express": "^5.2.1",
+    "socket.io": "^4.8.3",
+    "multer": "^2.0.2"
+  }
+}

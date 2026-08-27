@@ -1,0 +1,18 @@
+# Dependências
+node_modules/
+
+# Dados de execução (gerados pelo servidor — nunca commitar)
+channels.json
+servers.json
+roles.json
+messages.json
+dm-messages.json
+uploads/
+
+# Ambiente / segredos
+.env
+.env.*
+
+# Sistema operacional
+Thumbs.db
+.DS_Store
