@@ -838,6 +838,17 @@
               <div class="shortcut-key-badge" id="ptt-key-display" onclick="startPttKeyCapture()" style="cursor: pointer;" title="Clica pra trocar a tecla">Espaço (Space)</div>
             </div>
 
+            <div class="opt-sec-label">ISOLAMENTO DE VOZ</div>
+            <div class="opt-grid">
+              <div class="opt-card" id="opt-voice-isolation" onclick="toggleVoiceIsolation()">
+                <div>
+                  <div class="opt-card-title">Cancelamento de ruído (RNNoise)</div>
+                  <div class="opt-card-sub">Rede neural que remove teclado, ventilador e barulho de fundo, deixando só a sua voz. Roda no seu próprio PC, de graça — clique pra ligar/desligar.</div>
+                </div>
+                <div class="opt-radio-dot"></div>
+              </div>
+            </div>
+
             <div class="opt-sec-label">VOLUME & TESTE DO MICROFONE</div>
             <div class="mic-test-container">
               <div style="display: flex; justify-content: space-between; font-size: 11px; color: #8a8f9d; font-weight: bold;">
@@ -1451,13 +1462,13 @@
     let micDestNode = null; // .stream daqui é o que de fato mandamos pros outros
     let noiseGateRafId = null;
     const NOISE_GATE_THRESHOLD = 12; // mesma escala do detector de "está falando" (0-255)
-    // ---- TESTE TEMPORÁRIO ----
-    // Desliga TUDO de processamento de microfone (RNNoise, portão de ruído, PTT) —
-    // o áudio sai cru/seco, exatamente como saía antes de mexer em qualquer uma
-    // dessas coisas. É só pra confirmar se os bugs recentes de voz têm a ver com
-    // esse processamento ou não. Depois de confirmado, muda pra "true" nessa
-    // mesma linha e vai testando cada pedaço de volta, um de cada vez.
-    const MIC_PROCESSING_ENABLED = false;
+    // ---------- Isolamento de voz ----------
+    // Liga/desliga o processamento do microfone: RNNoise (cancelamento de ruído por
+    // rede neural — mesma categoria de tecnologia do Krisp do Discord, só que de
+    // código aberto e gratuito, rodando 100% no PC da pessoa) + portão de ruído.
+    // Controlável em Configurações > Voz & Áudio; a preferência fica salva no
+    // aparelho e o padrão é LIGADO.
+    let micProcessingEnabled = localStorage.getItem('dspeak-voice-isolation') !== 'off';
 
     // ---------- Efeitos sonoros da sala (entrar/sair, mutar/desmutar, transmissão) ----------
     // Gerados na hora com osciladores (Web Audio API), sem nenhum arquivo de áudio externo
@@ -2945,10 +2956,11 @@
         micSourceNode = micProcessingCtx.createMediaStreamSource(rawStream);
         micDestNode = micProcessingCtx.createMediaStreamDestination();
 
-        // ---- TESTE TEMPORÁRIO: áudio cru, sem processamento nenhum ----
-        if (!MIC_PROCESSING_ENABLED) {
+        // Isolamento de voz desligado nas configurações: o áudio sai cru, sem
+        // RNNoise nem portão de ruído (só os filtros nativos do navegador).
+        if (!micProcessingEnabled) {
           micSourceNode.connect(micDestNode);
-          console.log('[Mic] Processamento DESLIGADO pra teste — áudio saindo cru/sem tratamento nenhum.');
+          console.log('[Mic] Isolamento de voz DESLIGADO — áudio saindo sem tratamento extra.');
           return;
         }
 
@@ -3108,6 +3120,26 @@
         localMicStream.getAudioTracks().forEach(t => t.enabled = !isMuted && !isDeafened);
       }
     }
+
+    // ---------- Isolamento de voz: botão nas configurações ----------
+    function updateVoiceIsolationCard() {
+      const card = document.getElementById('opt-voice-isolation');
+      if (card) card.classList.toggle('selected', micProcessingEnabled);
+    }
+
+    function toggleVoiceIsolation() {
+      micProcessingEnabled = !micProcessingEnabled;
+      localStorage.setItem('dspeak-voice-isolation', micProcessingEnabled ? 'on' : 'off');
+      updateVoiceIsolationCard();
+      // Se já estivermos numa chamada, reinicia o microfone na hora — restartLocalMic
+      // remonta o processamento e troca a faixa enviada pra cada pessoa (replaceTrack),
+      // então a mudança vale imediatamente, sem sair e voltar da sala.
+      if (localMicStream) restartLocalMic();
+      showToast(micProcessingEnabled
+        ? 'Isolamento de voz LIGADO — ruído de fundo sendo removido pela rede neural.'
+        : 'Isolamento de voz desligado — áudio do microfone saindo sem tratamento extra.');
+    }
+    updateVoiceIsolationCard();
 
     function addMicTrackToPeer(pc, targetSocketId, retriesLeft) {
       if (retriesLeft === undefined) retriesLeft = 6;
