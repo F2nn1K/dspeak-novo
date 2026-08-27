@@ -390,7 +390,7 @@
     .voice-main-content { flex: 1; display: flex; flex-direction: column; position: relative; height: 100%; overflow: hidden; gap: 12px; }
 
     .stage-layout { flex: 1; display: flex; flex-direction: column; gap: 12px; width: 100%; height: 100%; min-height: 0; overflow: hidden; }
-    .video-stage-wrapper { flex: 1; min-height: 0; position: relative; display: flex; }
+    .video-stage-wrapper { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
 
     /* Layout de "palco": a transmissão principal fica GRANDE em cima, e as outras
        viram miniaturas numa faixa embaixo — clicou na miniatura, ela sobe pro palco.
@@ -469,20 +469,20 @@
        cartõezinhos espremidos embaixo e viram blocos grandes preenchendo o palco
        inteiro (igual à sala de voz do Discord). Quando alguma live começa, o vídeo
        toma o palco e os participantes voltam pra faixa compacta de baixo. */
-    .stage-layout.no-streams .video-stage-wrapper { flex: 0 0 0; min-height: 0; position: static; }
-    .stage-layout.no-streams .connected-users-stage {
+    .stage-layout.no-streams:not(.has-music):not(.music-panel-open) .video-stage-wrapper { flex: 0 0 0; min-height: 0; position: static; }
+    .stage-layout.no-streams:not(.has-music):not(.music-panel-open) .connected-users-stage {
       flex: 1; max-height: none; display: grid;
       grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
       grid-auto-rows: minmax(160px, 1fr);
       align-content: stretch; justify-content: stretch;
     }
-    .stage-layout.no-streams .user-card { width: auto; height: auto; min-height: 160px; gap: 10px; }
-    .stage-layout.no-streams .card-avatar { width: 84px; height: 84px; font-size: 32px; border-width: 3px; }
-    .stage-layout.no-streams .card-name-pill { font-size: 15px; max-width: 240px; }
+    .stage-layout.no-streams:not(.has-music):not(.music-panel-open) .user-card { width: auto; height: auto; min-height: 160px; gap: 10px; }
+    .stage-layout.no-streams:not(.has-music):not(.music-panel-open) .card-avatar { width: 84px; height: 84px; font-size: 32px; border-width: 3px; }
+    .stage-layout.no-streams:not(.has-music):not(.music-panel-open) .card-name-pill { font-size: 15px; max-width: 240px; }
     @media (max-width: 760px), (max-height: 560px) {
-      .stage-layout.no-streams .connected-users-stage { grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); grid-auto-rows: minmax(120px, 1fr); }
-      .stage-layout.no-streams .user-card { min-height: 120px; }
-      .stage-layout.no-streams .card-avatar { width: 56px; height: 56px; font-size: 22px; }
+      .stage-layout.no-streams:not(.has-music):not(.music-panel-open) .connected-users-stage { grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); grid-auto-rows: minmax(120px, 1fr); }
+      .stage-layout.no-streams:not(.has-music):not(.music-panel-open) .user-card { min-height: 120px; }
+      .stage-layout.no-streams:not(.has-music):not(.music-panel-open) .card-avatar { width: 56px; height: 56px; font-size: 22px; }
     }
 
     .user-card { width: 150px; height: 104px; border-radius: 14px; background: linear-gradient(135deg, #181b24, #221c2e); display: flex; flex-direction: column; align-items: center; justify-content: center; position: relative; border: 1px solid rgba(255, 85, 0, 0.3); box-shadow: 0 4px 12px rgba(0,0,0,0.6); gap: 6px; }
@@ -522,6 +522,81 @@
     .stage-btn.active-off { background: rgba(255, 51, 51, 0.2); border-color: rgba(255, 51, 51, 0.4); }
     .stage-btn.active-off svg { stroke: #ff3333; }
     .stage-btn.active-share { background: #ff3333 !important; border-color: #ff3333 !important; }
+    .stage-btn.active-music { background: #ff5500; border-color: #ff5500; box-shadow: 0 0 12px rgba(255, 85, 0, 0.55); }
+
+    /* Ouvir junto — player oficial do YouTube/Spotify sincronizado na sala */
+    #music-together {
+      display: none; flex-direction: column; flex-shrink: 0; min-height: 0;
+      background: #0c0d10; border: 1px solid rgba(255, 85, 0, 0.35); border-radius: 14px;
+      overflow: hidden; position: relative; z-index: 8;
+    }
+    #music-together.is-visible { display: flex; margin-bottom: 70px; }
+    #music-together.is-open { flex: 1; min-height: 220px; max-height: min(62vh, 560px); }
+    .stage-layout.has-music.no-streams #music-together.is-open { max-height: none; }
+    #music-together.is-mini { flex-direction: row; align-items: center; height: 78px; padding: 0 10px; gap: 10px; }
+    #music-together.is-mini .music-player-stage { width: 128px; height: 62px; flex-shrink: 0; border-radius: 8px; }
+    #music-together.is-mini .music-queue-wrap, #music-together.is-mini .music-add-row, #music-together.is-mini .music-hint { display: none; }
+    #music-together.is-mini .music-now { padding: 0; border: none; flex: 1; min-width: 0; }
+    .music-player-stage { position: relative; background: #000; flex: 1; min-height: 140px; }
+    #music-together.is-mini .music-player-stage { flex: 0 0 128px; min-height: 0; }
+    #yt-music-host, #spotify-music-host { position: absolute; inset: 0; }
+    #yt-music-host iframe, #spotify-music-host iframe, #yt-music-player { width: 100% !important; height: 100% !important; }
+    #yt-music-host.hidden, #spotify-music-host.hidden { display: none; }
+    #music-unlock {
+      position: absolute; inset: 0; background: rgba(8, 9, 12, 0.78); display: none;
+      align-items: center; justify-content: center; z-index: 5; cursor: pointer; flex-direction: column; gap: 8px;
+    }
+    #music-unlock.visible { display: flex; }
+    #music-unlock span { background: #ff5500; color: #fff; font-weight: 800; padding: 12px 18px; border-radius: 10px; font-size: 14px; }
+    #music-unlock p { color: #cfd2d8; font-size: 12px; margin: 0; }
+    .music-now { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-top: 1px solid rgba(255,85,0,0.18); flex-shrink: 0; }
+    .music-now-top { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .music-now-meta { flex: 1; min-width: 0; }
+    .music-now-title { font-size: 13px; font-weight: 800; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .music-now-sub { font-size: 11px; color: #8a8f9d; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .music-controls { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+    .music-ctrl {
+      width: 34px; height: 34px; border-radius: 10px; background: #1c202d; border: 1px solid rgba(255,255,255,0.08);
+      color: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center;
+    }
+    .music-ctrl:hover { background: #ff5500; border-color: #ff5500; }
+    .music-ctrl svg { width: 16px; height: 16px; stroke: #fff; stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+    .music-ctrl.play svg { fill: #fff; stroke: none; }
+    .music-progress-row { display: flex; align-items: center; gap: 8px; }
+    .music-time { font-size: 10px; color: #8a8f9d; font-variant-numeric: tabular-nums; width: 36px; }
+    .music-time.end { text-align: right; }
+    #music-seek {
+      flex: 1; height: 6px; accent-color: #ff5500; cursor: pointer;
+    }
+    .music-vol { width: 72px; accent-color: #ff5500; cursor: pointer; }
+    .music-add-row { display: flex; gap: 8px; padding: 0 12px 10px; flex-shrink: 0; }
+    #music-url-input {
+      flex: 1; background: #13151b; border: 1px solid rgba(255,85,0,0.25); border-radius: 8px;
+      color: #f2f3f5; padding: 8px 10px; font-size: 12px; outline: none; min-width: 0;
+    }
+    #music-url-input:focus { border-color: #ff5500; }
+    #music-add-btn {
+      background: #ff5500; color: #fff; border: none; border-radius: 8px; font-weight: 800;
+      padding: 8px 12px; cursor: pointer; font-size: 12px; flex-shrink: 0;
+    }
+    #music-add-btn:hover { filter: brightness(1.08); }
+    .music-hint { font-size: 11px; color: #8a8f9d; padding: 0 12px 8px; }
+    .music-queue-wrap { flex: 1; min-height: 0; overflow-y: auto; padding: 0 8px 10px; }
+    .music-queue-item {
+      display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; cursor: pointer;
+    }
+    .music-queue-item:hover { background: rgba(255,85,0,0.1); }
+    .music-queue-item.is-current { background: rgba(255,85,0,0.18); }
+    .music-queue-thumb { width: 42px; height: 42px; border-radius: 6px; background: #181b24; object-fit: cover; flex-shrink: 0; }
+    .music-queue-meta { flex: 1; min-width: 0; }
+    .music-queue-title { font-size: 12px; font-weight: 700; color: #f2f3f5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .music-queue-sub { font-size: 10px; color: #8a8f9d; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .music-queue-type { font-size: 9px; font-weight: 800; color: #ff5500; flex-shrink: 0; letter-spacing: 0.3px; }
+    .music-queue-remove {
+      background: transparent; border: none; color: #8a8f9d; cursor: pointer; font-size: 16px; padding: 0 4px; line-height: 1;
+    }
+    .music-queue-remove:hover { color: #ff3333; }
+    .music-empty { color: #8a8f9d; font-size: 12px; text-align: center; padding: 18px 12px; }
 
     #right-chat-sidebar { width: 400px; background: #13151b; border-left: 1px solid rgba(255, 85, 0, 0.12); display: flex; flex-direction: column; flex-shrink: 0; }
     
@@ -1208,6 +1283,42 @@
             <div class="video-stage-wrapper" id="video-stage-wrapper">
               <div id="streams-container"></div>
 
+              <div id="music-together">
+                <div class="music-player-stage">
+                  <div id="yt-music-host" class="hidden"><div id="yt-music-player"></div></div>
+                  <div id="spotify-music-host" class="hidden"></div>
+                  <div id="music-unlock" onclick="unlockMusicAudio()">
+                    <span>Clique para ouvir junto</span>
+                    <p>O navegador bloqueia som automático — um clique libera o player.</p>
+                  </div>
+                </div>
+                <div class="music-now">
+                  <div class="music-now-top">
+                    <div class="music-now-meta">
+                      <div class="music-now-title" id="music-now-title">Nada tocando</div>
+                      <div class="music-now-sub" id="music-now-sub">Cola um link do YouTube ou Spotify</div>
+                    </div>
+                    <div class="music-controls">
+                      <button class="music-ctrl" title="Anterior" onclick="musicPrev()"><svg viewBox="0 0 24 24"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/></svg></button>
+                      <button class="music-ctrl play" id="music-play-btn" title="Play/Pause" onclick="musicTogglePlay()"><svg viewBox="0 0 24 24" id="music-play-icon"><polygon points="6 4 20 12 6 20 6 4"/></svg></button>
+                      <button class="music-ctrl" title="Próxima" onclick="musicSkip()"><svg viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg></button>
+                    </div>
+                  </div>
+                  <div class="music-progress-row">
+                    <span class="music-time" id="music-time-cur">0:00</span>
+                    <input type="range" id="music-seek" min="0" max="1000" value="0" oninput="musicSeekPreview(this.value)" onchange="musicSeekCommit(this.value)" />
+                    <span class="music-time end" id="music-time-dur">0:00</span>
+                    <input type="range" class="music-vol" id="music-vol" min="0" max="100" value="80" title="Volume local" oninput="setMusicLocalVolume(this.value)" />
+                  </div>
+                </div>
+                <form class="music-add-row" onsubmit="submitMusicUrl(event)">
+                  <input id="music-url-input" type="text" placeholder="Cola o link do YouTube ou Spotify e aperta Enter" autocomplete="off" />
+                  <button type="submit" id="music-add-btn">Adicionar</button>
+                </form>
+                <div class="music-hint">YouTube toca inteiro no player oficial. Spotify toca inteiro se você estiver logado no Spotify no navegador — senão costuma ser prévia de 30s. Todo mundo da sala vê a mesma fila.</div>
+                <div class="music-queue-wrap" id="music-queue"></div>
+              </div>
+
               <div class="stage-controls-dock">
                 <button class="stage-btn" id="stage-mic-btn" onclick="toggleMute()" title="Mutar Microfone">
                   <svg viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
@@ -1219,6 +1330,10 @@
                 
                 <button class="stage-btn" id="stage-share-btn" onclick="toggleScreenShare()" title="Transmitir Tela">
                   <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                </button>
+
+                <button class="stage-btn" id="stage-music-btn" onclick="toggleMusicPanel()" title="Ouvir junto (YouTube / Spotify)">
+                  <svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
                 </button>
 
                 <button class="stage-btn" id="stage-quality-btn" onclick="openSettingsModal('stream')" title="Ajustar Qualidade da Transmissão" style="display: none;">
@@ -1654,6 +1769,7 @@
         el.muted = true;
         el.pause();
       });
+      applyMusicOutputMute();
     }
 
     function restorePeerAudioAfterStream() {
@@ -1663,6 +1779,7 @@
         el.muted = false;
         el.play().catch(() => {});
       });
+      applyMusicOutputMute();
     }
 
     let peerConnections = {};
@@ -3519,6 +3636,8 @@
         const canShareScreen = connectedVoiceChannel !== WAITING_VOICE_ROOM;
         document.getElementById('share-btn').disabled = !canShareScreen;
         document.getElementById('stage-share-btn').disabled = !canShareScreen;
+        const musicBtn = document.getElementById('stage-music-btn');
+        if (musicBtn) musicBtn.disabled = !canShareScreen;
       }
       renderChannels();
       renderStageUsers();
@@ -3571,6 +3690,7 @@
         watchedStreams = {};
         activeStreams = {};
         renderStreamsContainer();
+        resetMusicLocal();
       }
       connectedVoiceChannel = channel.id;
       connectedVoiceChannelPassword = password || null;
@@ -3592,6 +3712,11 @@
       document.getElementById('share-btn').disabled = !canShareScreen;
       document.getElementById('stage-share-btn').disabled = !canShareScreen;
       document.getElementById('stage-share-btn').title = canShareScreen ? 'Transmitir Tela' : 'Transmissão de tela não disponível aqui';
+      const musicBtn = document.getElementById('stage-music-btn');
+      if (musicBtn) {
+        musicBtn.disabled = !canShareScreen;
+        musicBtn.title = canShareScreen ? 'Ouvir junto (YouTube / Spotify)' : 'Ouvir junto não disponível aqui';
+      }
 
       document.getElementById('voice-connection-panel').style.display = 'flex';
       document.getElementById('voice-status-channel-name').textContent = channel.name;
@@ -3648,6 +3773,7 @@
       watchedStreams = {};
       activeStreams = {};
       currentRoomIsSilent = false;
+      resetMusicLocal();
 
       renderChannels();
       renderStreamsContainer();
@@ -3830,6 +3956,7 @@
       // transmissão os participantes preenchem a tela em blocos grandes (Discord).
       const stageLayout = document.querySelector('.stage-layout');
       if (stageLayout) stageLayout.classList.toggle('no-streams', Object.keys(activeStreams).length === 0);
+      updateStageLayoutClasses();
 
       if (!connectedVoiceChannel) return;
 
@@ -3903,6 +4030,7 @@
       document.getElementById('stage-deafen-btn').classList.toggle('active-off', isDeafened);
       document.getElementById('stage-mic-btn').classList.toggle('active-off', isMuted);
       broadcastVoiceStatus();
+      applyMusicOutputMute();
     }
 
     // Avisa todo mundo (via servidor) se estamos mutados/ensurdecidos, pra aparecer
@@ -3921,6 +4049,489 @@
       container.appendChild(el);
       setTimeout(() => el.remove(), duration);
     }
+
+    // ---------- Ouvir junto (YouTube / Spotify oficiais, sincronizado na sala) ----------
+    let musicState = { queue: [], currentId: null, playing: false, positionSec: 0 };
+    let musicStateReceivedAt = Date.now();
+    let musicPanelOpen = false;
+    let musicDurationSec = 0;
+    let musicLocalVolume = 80;
+    let musicApplying = false;
+    let musicIgnoreUntil = 0;
+    let musicUserSeeking = false;
+    let musicNeedsUnlock = false;
+    let musicSpotifyUnlocked = false;
+    let musicEndedForId = null;
+    let ytPlayer = null;
+    let ytApiReadyPromise = null;
+    let spotifyApiReadyPromise = null;
+    let spotifyController = null;
+    let spotifyControllerUri = null;
+
+    function updateStageLayoutClasses() {
+      const stageLayout = document.querySelector('.stage-layout');
+      if (!stageLayout) return;
+      const hasStreams = Object.keys(activeStreams).length > 0;
+      const hasMusic = !!(musicState && musicState.currentId);
+      stageLayout.classList.toggle('no-streams', !hasStreams);
+      stageLayout.classList.toggle('has-music', hasMusic);
+      stageLayout.classList.toggle('music-panel-open', musicPanelOpen);
+    }
+
+    function currentMusicItem() {
+      if (!musicState || !musicState.currentId) return null;
+      return (musicState.queue || []).find(i => i.id === musicState.currentId) || null;
+    }
+
+    function expectedMusicPos() {
+      if (!musicState || !musicState.currentId) return 0;
+      if (!musicState.playing) return musicState.positionSec || 0;
+      return Math.max(0, (musicState.positionSec || 0) + (Date.now() - musicStateReceivedAt) / 1000);
+    }
+
+    function formatMusicTime(sec) {
+      if (!Number.isFinite(sec) || sec < 0) return '0:00';
+      const s = Math.floor(sec % 60);
+      const m = Math.floor(sec / 60);
+      return `${m}:${String(s).padStart(2, '0')}`;
+    }
+
+    function musicOutputShouldMute() {
+      return !!(isDeafened || autoMutedForStreamAudio);
+    }
+
+    function applyMusicOutputMute() {
+      const silent = musicOutputShouldMute();
+      if (ytPlayer && typeof ytPlayer.setVolume === 'function') {
+        try { ytPlayer.setVolume(silent ? 0 : musicLocalVolume); } catch (e) {}
+      }
+      if (silent) {
+        if (spotifyController && musicState.playing) {
+          try { spotifyController.pause(); } catch (e) {}
+        }
+      } else if (spotifyController && musicState.playing && Date.now() > musicIgnoreUntil) {
+        try { spotifyController.resume(); } catch (e) {}
+      }
+    }
+
+    function setMusicLocalVolume(value) {
+      musicLocalVolume = Math.max(0, Math.min(100, Number(value) || 0));
+      applyMusicOutputMute();
+    }
+
+    function setMusicUnlockVisible(show) {
+      const el = document.getElementById('music-unlock');
+      if (el) el.classList.toggle('visible', !!show);
+    }
+
+    function updateMusicChrome() {
+      const root = document.getElementById('music-together');
+      const btn = document.getElementById('stage-music-btn');
+      const item = currentMusicItem();
+      const visible = musicPanelOpen || !!item;
+      if (root) {
+        root.classList.toggle('is-visible', visible);
+        root.classList.toggle('is-open', musicPanelOpen);
+        root.classList.toggle('is-mini', visible && !musicPanelOpen && !!item);
+      }
+      if (btn) btn.classList.toggle('active-music', musicPanelOpen || !!(musicState && musicState.playing));
+      const titleEl = document.getElementById('music-now-title');
+      const subEl = document.getElementById('music-now-sub');
+      if (titleEl) titleEl.textContent = item ? item.title : (musicPanelOpen ? 'Nada tocando' : 'Nada tocando');
+      if (subEl) {
+        if (item) {
+          const who = item.addedBy ? ` · ${item.addedBy}` : '';
+          subEl.textContent = `${item.type === 'spotify' ? 'Spotify' : 'YouTube'}${item.author ? ' · ' + item.author : ''}${who}`;
+        } else {
+          subEl.textContent = 'Cola um link do YouTube ou Spotify';
+        }
+      }
+      const icon = document.getElementById('music-play-icon');
+      if (icon) {
+        icon.innerHTML = musicState.playing
+          ? '<rect x="6" y="5" width="4" height="14"/><rect x="14" y="5" width="4" height="14"/>'
+          : '<polygon points="6 4 20 12 6 20 6 4"/>';
+      }
+      renderMusicQueue();
+      updateStageLayoutClasses();
+    }
+
+    function renderMusicQueue() {
+      const wrap = document.getElementById('music-queue');
+      if (!wrap) return;
+      const queue = (musicState && musicState.queue) || [];
+      if (!queue.length) {
+        wrap.innerHTML = '<div class="music-empty">Fila vazia — cola um link acima pra começar.</div>';
+        return;
+      }
+      wrap.innerHTML = queue.map(item => {
+        const current = item.id === musicState.currentId;
+        const thumb = item.thumbnail
+          ? `<img class="music-queue-thumb" src="${escapeHtml(item.thumbnail)}" alt="">`
+          : `<div class="music-queue-thumb"></div>`;
+        return `<div class="music-queue-item${current ? ' is-current' : ''}" data-id="${escapeHtml(item.id)}">
+          ${thumb}
+          <div class="music-queue-meta">
+            <div class="music-queue-title">${escapeHtml(item.title)}</div>
+            <div class="music-queue-sub">${escapeHtml((item.author || '') + (item.addedBy ? ' · ' + item.addedBy : ''))}</div>
+          </div>
+          <span class="music-queue-type">${item.type === 'spotify' ? 'SPOTIFY' : 'YT'}</span>
+          <button class="music-queue-remove" data-remove="${escapeHtml(item.id)}" title="Tirar da fila">×</button>
+        </div>`;
+      }).join('');
+      wrap.querySelectorAll('.music-queue-item').forEach(row => {
+        row.addEventListener('click', (e) => {
+          if (e.target.closest('[data-remove]')) return;
+          socket.emit('music-jump', { itemId: row.dataset.id });
+        });
+      });
+      wrap.querySelectorAll('[data-remove]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          socket.emit('music-remove', { itemId: btn.getAttribute('data-remove') });
+        });
+      });
+    }
+
+    function toggleMusicPanel() {
+      if (connectedVoiceChannel === WAITING_VOICE_ROOM) {
+        showToast('Ouvir junto não está disponível na Sala de Espera.');
+        return;
+      }
+      if (!connectedVoiceChannel) {
+        showToast('Entra numa sala de voz pra ouvir junto.');
+        return;
+      }
+      musicPanelOpen = !musicPanelOpen;
+      updateMusicChrome();
+    }
+
+    function submitMusicUrl(e) {
+      e.preventDefault();
+      const input = document.getElementById('music-url-input');
+      const url = (input && input.value || '').trim();
+      if (!url) return;
+      socket.emit('music-add', { url });
+      input.value = '';
+    }
+
+    function musicTogglePlay() {
+      if (!currentMusicItem()) return;
+      socket.emit(musicState.playing ? 'music-pause' : 'music-play');
+    }
+    function musicSkip() { socket.emit('music-skip'); }
+    function musicPrev() { socket.emit('music-prev'); }
+
+    function musicSeekPreview(value) {
+      musicUserSeeking = true;
+      const dur = musicDurationSec || 0;
+      const pos = dur * (Number(value) / 1000);
+      const cur = document.getElementById('music-time-cur');
+      if (cur) cur.textContent = formatMusicTime(pos);
+    }
+    function musicSeekCommit(value) {
+      musicUserSeeking = false;
+      const dur = musicDurationSec || 0;
+      socket.emit('music-seek', { seconds: dur * (Number(value) / 1000) });
+    }
+
+    function loadYoutubeApi() {
+      if (window.YT && window.YT.Player) return Promise.resolve();
+      if (ytApiReadyPromise) return ytApiReadyPromise;
+      ytApiReadyPromise = new Promise((resolve) => {
+        const prev = window.onYouTubeIframeAPIReady;
+        window.onYouTubeIframeAPIReady = () => { if (typeof prev === 'function') prev(); resolve(); };
+        if (!document.getElementById('yt-iframe-api')) {
+          const s = document.createElement('script');
+          s.id = 'yt-iframe-api';
+          s.src = 'https://www.youtube.com/iframe_api';
+          document.head.appendChild(s);
+        }
+      });
+      return ytApiReadyPromise;
+    }
+
+    function loadSpotifyApi() {
+      if (window.__dspeakSpotifyIframeApi) return Promise.resolve(window.__dspeakSpotifyIframeApi);
+      if (spotifyApiReadyPromise) return spotifyApiReadyPromise;
+      spotifyApiReadyPromise = new Promise((resolve) => {
+        const prev = window.onSpotifyIframeApiReady;
+        window.onSpotifyIframeApiReady = (api) => {
+          window.__dspeakSpotifyIframeApi = api;
+          if (typeof prev === 'function') prev(api);
+          resolve(api);
+        };
+        if (!document.getElementById('spotify-iframe-api')) {
+          const s = document.createElement('script');
+          s.id = 'spotify-iframe-api';
+          s.src = 'https://open.spotify.com/embed/iframe-api/v1';
+          s.async = true;
+          document.head.appendChild(s);
+        }
+      });
+      return spotifyApiReadyPromise;
+    }
+
+    function ensureYtPlayerInner() {
+      const host = document.getElementById('yt-music-host');
+      if (!host) return null;
+      let inner = document.getElementById('yt-music-player');
+      if (!inner) {
+        inner = document.createElement('div');
+        inner.id = 'yt-music-player';
+        inner.style.width = '100%';
+        inner.style.height = '100%';
+        host.appendChild(inner);
+      }
+      return inner;
+    }
+
+    async function ensureYtPlayer() {
+      await loadYoutubeApi();
+      if (ytPlayer && typeof ytPlayer.loadVideoById === 'function') return ytPlayer;
+      ensureYtPlayerInner();
+      ytPlayer = await new Promise((resolve) => {
+        const player = new YT.Player('yt-music-player', {
+          width: '100%',
+          height: '100%',
+          playerVars: {
+            autoplay: 0,
+            controls: 1,
+            rel: 0,
+            modestbranding: 1,
+            playsinline: 1,
+            origin: location.origin
+          },
+          events: {
+            onReady: () => resolve(player),
+            onStateChange: (e) => onYtStateChange(e),
+            onError: (e) => {
+              console.warn('[Música] YouTube recusou o vídeo', e && e.data);
+              showToast('Esse vídeo do YouTube não pôde ser tocado no player (restrito ou indisponível).');
+              if (currentMusicItem()) socket.emit('music-skip');
+            }
+          }
+        });
+      });
+      return ytPlayer;
+    }
+
+    function onYtStateChange(e) {
+      if (!window.YT) return;
+      if (e.data === YT.PlayerState.PLAYING) {
+        musicNeedsUnlock = false;
+        setMusicUnlockVisible(false);
+        try { musicDurationSec = ytPlayer.getDuration() || musicDurationSec; } catch (err) {}
+        applyMusicOutputMute();
+      }
+      if (Date.now() < musicIgnoreUntil || musicApplying) return;
+      const item = currentMusicItem();
+      if (!item || item.type !== 'youtube') return;
+      if (e.data === YT.PlayerState.ENDED) {
+        if (musicEndedForId === item.id) return;
+        musicEndedForId = item.id;
+        socket.emit('music-ended', { itemId: item.id });
+      }
+      if (e.data === YT.PlayerState.PAUSED && musicState.playing) {
+        socket.emit('music-pause');
+      } else if (e.data === YT.PlayerState.PLAYING && !musicState.playing) {
+        socket.emit('music-play');
+      }
+    }
+
+    async function ensureSpotifyController(uri) {
+      const api = await loadSpotifyApi();
+      const host = document.getElementById('spotify-music-host');
+      if (!host) return null;
+      if (spotifyController && spotifyControllerUri === uri) return spotifyController;
+      if (spotifyController && typeof spotifyController.loadUri === 'function') {
+        spotifyControllerUri = uri;
+        spotifyController.loadUri(uri);
+        return spotifyController;
+      }
+      host.innerHTML = '';
+      spotifyController = await new Promise((resolve) => {
+        api.createController(host, { uri, width: '100%', height: '100%' }, (ctrl) => {
+          ctrl.addListener('playback_update', (e) => {
+            const data = e && e.data;
+            if (!data) return;
+            if (data.duration) musicDurationSec = data.duration / 1000;
+            if (Date.now() < musicIgnoreUntil || musicApplying) return;
+            const item = currentMusicItem();
+            if (!item || item.type !== 'spotify') return;
+            if (data.isPaused && musicState.playing && !musicOutputShouldMute()) socket.emit('music-pause');
+            if (!data.isPaused && !musicState.playing) socket.emit('music-play');
+            const posSec = (data.position || 0) / 1000;
+            if (data.duration && posSec >= (data.duration / 1000) - 0.6) {
+              if (musicEndedForId === item.id) return;
+              musicEndedForId = item.id;
+              socket.emit('music-ended', { itemId: item.id });
+            }
+          });
+          resolve(ctrl);
+        });
+      });
+      spotifyControllerUri = uri;
+      return spotifyController;
+    }
+
+    async function applyMusicPlayers() {
+      const item = currentMusicItem();
+      const ytHost = document.getElementById('yt-music-host');
+      const spHost = document.getElementById('spotify-music-host');
+      if (!item) {
+        if (ytHost) ytHost.classList.add('hidden');
+        if (spHost) spHost.classList.add('hidden');
+        setMusicUnlockVisible(false);
+        if (ytPlayer && typeof ytPlayer.stopVideo === 'function') {
+          try { ytPlayer.stopVideo(); } catch (e) {}
+        }
+        if (spotifyController) {
+          try { spotifyController.pause(); } catch (e) {}
+        }
+        musicDurationSec = 0;
+        return;
+      }
+
+      musicApplying = true;
+      musicIgnoreUntil = Date.now() + 1200;
+      const target = expectedMusicPos();
+
+      try {
+        if (item.type === 'youtube') {
+          if (spHost) spHost.classList.add('hidden');
+          if (ytHost) ytHost.classList.remove('hidden');
+          if (spotifyController) { try { spotifyController.pause(); } catch (e) {} }
+          const player = await ensureYtPlayer();
+          const currentId = player.getVideoData && player.getVideoData().video_id;
+          if (currentId !== item.sourceId) {
+            player.loadVideoById({ videoId: item.sourceId, startSeconds: target });
+          } else {
+            const nowPos = player.getCurrentTime ? player.getCurrentTime() : 0;
+            if (Math.abs(nowPos - target) > 1.4) player.seekTo(target, true);
+          }
+          applyMusicOutputMute();
+          if (musicState.playing) {
+            const playResult = player.playVideo();
+            Promise.resolve(playResult).catch(() => { musicNeedsUnlock = true; setMusicUnlockVisible(true); });
+            setTimeout(() => {
+              try {
+                if (musicState.playing && player.getPlayerState() !== YT.PlayerState.PLAYING) {
+                  musicNeedsUnlock = true;
+                  setMusicUnlockVisible(true);
+                }
+              } catch (e) {}
+            }, 700);
+          } else {
+            player.pauseVideo();
+            setMusicUnlockVisible(false);
+          }
+        } else {
+          if (ytHost) ytHost.classList.add('hidden');
+          if (spHost) spHost.classList.remove('hidden');
+          if (ytPlayer && typeof ytPlayer.pauseVideo === 'function') {
+            try { ytPlayer.pauseVideo(); } catch (e) {}
+          }
+          const uri = `spotify:track:${item.sourceId}`;
+          const ctrl = await ensureSpotifyController(uri);
+          if (!ctrl) return;
+          try { ctrl.seek(Math.floor(target)); } catch (e) {}
+          if (musicState.playing && !musicOutputShouldMute()) {
+            try { ctrl.resume(); } catch (e) { try { ctrl.play(); } catch (e2) {} }
+            if (!musicSpotifyUnlocked) {
+              musicNeedsUnlock = true;
+              setMusicUnlockVisible(true);
+            }
+          } else {
+            try { ctrl.pause(); } catch (e) {}
+            setMusicUnlockVisible(false);
+          }
+        }
+      } catch (err) {
+        console.warn('[Música] falha ao aplicar player', err);
+        musicNeedsUnlock = true;
+        setMusicUnlockVisible(true);
+      } finally {
+        musicApplying = false;
+      }
+    }
+
+    function unlockMusicAudio() {
+      musicNeedsUnlock = false;
+      musicSpotifyUnlocked = true;
+      setMusicUnlockVisible(false);
+      const item = currentMusicItem();
+      if (!item || !musicState.playing) return;
+      if (item.type === 'youtube' && ytPlayer) {
+        try { ytPlayer.playVideo(); applyMusicOutputMute(); } catch (e) {}
+      }
+      if (item.type === 'spotify' && spotifyController) {
+        try { spotifyController.resume(); } catch (e) { try { spotifyController.play(); } catch (e2) {} }
+      }
+    }
+
+    function resetMusicLocal() {
+      musicState = { queue: [], currentId: null, playing: false, positionSec: 0 };
+      musicPanelOpen = false;
+      musicDurationSec = 0;
+      musicEndedForId = null;
+      musicNeedsUnlock = false;
+      setMusicUnlockVisible(false);
+      if (ytPlayer && typeof ytPlayer.stopVideo === 'function') {
+        try { ytPlayer.stopVideo(); } catch (e) {}
+      }
+      if (spotifyController) {
+        try { spotifyController.pause(); } catch (e) {}
+      }
+      const ytHost = document.getElementById('yt-music-host');
+      const spHost = document.getElementById('spotify-music-host');
+      if (ytHost) ytHost.classList.add('hidden');
+      if (spHost) spHost.classList.add('hidden');
+      updateMusicChrome();
+    }
+
+    socket.on('music-state', (state) => {
+      const prevId = musicState && musicState.currentId;
+      musicState = state || { queue: [], currentId: null, playing: false, positionSec: 0 };
+      musicStateReceivedAt = Date.now();
+      if (musicState.currentId !== prevId) {
+        musicEndedForId = null;
+        musicDurationSec = 0;
+      }
+      if (musicState.currentId && connectedVoiceChannel && connectedVoiceChannel !== WAITING_VOICE_ROOM) {
+        // Mini player aparece sozinho quando alguém coloca música — a fila continua
+        // no painel aberto.
+      }
+      updateMusicChrome();
+      applyMusicPlayers();
+    });
+
+    socket.on('music-error', (msg) => { if (msg) showToast(msg); });
+
+    setInterval(() => {
+      if (musicUserSeeking) return;
+      const item = currentMusicItem();
+      const cur = document.getElementById('music-time-cur');
+      const durEl = document.getElementById('music-time-dur');
+      const seek = document.getElementById('music-seek');
+      const pos = expectedMusicPos();
+      if (item && ytPlayer && item.type === 'youtube' && typeof ytPlayer.getDuration === 'function') {
+        try {
+          const d = ytPlayer.getDuration();
+          if (d > 0) musicDurationSec = d;
+        } catch (e) {}
+      }
+      if (cur) cur.textContent = formatMusicTime(pos);
+      if (durEl) durEl.textContent = formatMusicTime(musicDurationSec);
+      if (seek && musicDurationSec > 0) seek.value = String(Math.max(0, Math.min(1000, Math.round((pos / musicDurationSec) * 1000))));
+      if (!item || !musicState.playing || Date.now() < musicIgnoreUntil || musicApplying) return;
+      if (item.type === 'youtube' && ytPlayer && typeof ytPlayer.getCurrentTime === 'function') {
+        try {
+          const nowPos = ytPlayer.getCurrentTime();
+          if (Math.abs(nowPos - pos) > 1.8) ytPlayer.seekTo(pos, true);
+        } catch (e) {}
+      }
+    }, 500);
 
     function toggleScreenShare() {
       if (!localStream) {
@@ -5256,6 +5867,7 @@
       // com live, o vídeo assume o palco e os participantes viram a faixa compacta.
       const stageLayout = document.querySelector('.stage-layout');
       if (stageLayout) stageLayout.classList.toggle('no-streams', keys.length === 0);
+      updateStageLayoutClasses();
 
       if (keys.length === 0) {
         container.style.display = 'none';

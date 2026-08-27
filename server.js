@@ -235,6 +235,169 @@ app.post('/upload', (req, res) => {
 const voiceUsers = {};
 const activeRoomStreams = {};
 
+// ---------- Ouvir junto (YouTube / Spotify oficiais) ----------
+// Estado por sala de voz. O áudio NÃO é baixado nem retransmitido pelo servidor —
+// só a fila/play/pause/posição. Cada cliente toca no player oficial (iframe).
+const roomMusic = {};
+const MUSIC_MAX_QUEUE = 40;
+const MUSIC_MAX_URL = 500;
+
+function parseMusicLink(raw) {
+  let s = String(raw || '').trim();
+  if (!s || s.length > MUSIC_MAX_URL) return null;
+
+  const uriTrack = /^spotify:track:([0-9A-Za-z]{22})$/.exec(s);
+  if (uriTrack) return { type: 'spotify', sourceId: uriTrack[1] };
+
+  if (!/^https?:\/\//i.test(s) && !s.includes(' ')) s = 'https://' + s;
+
+  let u;
+  try { u = new URL(s); } catch (e) { return null; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+  const host = u.hostname.replace(/^www\./, '').toLowerCase();
+
+  if (host === 'youtu.be' || host === 'youtube.com' || host === 'm.youtube.com' || host === 'music.youtube.com' || host === 'youtube-nocookie.com') {
+    let id = null;
+    if (host === 'youtu.be') id = (u.pathname.split('/').filter(Boolean)[0] || '');
+    else if (u.pathname === '/watch' || u.pathname.startsWith('/watch')) id = u.searchParams.get('v') || '';
+    else {
+      const parts = u.pathname.split('/').filter(Boolean);
+      if (parts[0] === 'embed' || parts[0] === 'shorts' || parts[0] === 'live') id = parts[1] || '';
+    }
+    id = String(id).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 11);
+    if (/^[a-zA-Z0-9_-]{11}$/.test(id)) return { type: 'youtube', sourceId: id };
+    return null;
+  }
+
+  if (host === 'open.spotify.com' || host === 'play.spotify.com') {
+    const parts = u.pathname.split('/').filter(Boolean);
+    const trackIdx = parts.indexOf('track');
+    if (trackIdx >= 0 && parts[trackIdx + 1]) {
+      const id = String(parts[trackIdx + 1]).split('?')[0];
+      if (/^[0-9A-Za-z]{22}$/.test(id)) return { type: 'spotify', sourceId: id };
+    }
+    return null;
+  }
+
+  return null;
+}
+
+async function lookupMusicMeta(parsed) {
+  if (parsed.type === 'youtube') {
+    const page = `https://www.youtube.com/watch?v=${parsed.sourceId}`;
+    const fallback = {
+      title: 'YouTube',
+      author: '',
+      thumbnail: `https://i.ytimg.com/vi/${parsed.sourceId}/hqdefault.jpg`
+    };
+    try {
+      const res = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(page)}&format=json`, { signal: AbortSignal.timeout(4000) });
+      if (!res.ok) return fallback;
+      const data = await res.json();
+      return {
+        title: String(data.title || 'YouTube').slice(0, 200),
+        author: String(data.author_name || '').slice(0, 120),
+        thumbnail: fallback.thumbnail
+      };
+    } catch (e) {
+      return fallback;
+    }
+  }
+
+  const page = `https://open.spotify.com/track/${parsed.sourceId}`;
+  const fallback = { title: 'Spotify', author: '', thumbnail: '' };
+  try {
+    const res = await fetch(`https://open.spotify.com/oembed?url=${encodeURIComponent(page)}`, { signal: AbortSignal.timeout(4000) });
+    if (!res.ok) return fallback;
+    const data = await res.json();
+    return {
+      title: String(data.title || 'Spotify').slice(0, 200),
+      author: String(data.author_name || '').slice(0, 120),
+      thumbnail: String(data.thumbnail_url || '').slice(0, 500)
+    };
+  } catch (e) {
+    return fallback;
+  }
+}
+
+function computeMusicPosition(session) {
+  if (!session || !session.currentId) return 0;
+  if (!session.playing) return session.positionSec;
+  return Math.max(0, session.positionSec + (Date.now() - session.updatedAt) / 1000);
+}
+
+function freezeMusicPosition(session) {
+  session.positionSec = computeMusicPosition(session);
+  session.updatedAt = Date.now();
+}
+
+function publicMusicState(session) {
+  if (!session) {
+    return { queue: [], currentId: null, playing: false, positionSec: 0, serverNow: Date.now() };
+  }
+  return {
+    queue: session.queue,
+    currentId: session.currentId,
+    playing: session.playing,
+    positionSec: computeMusicPosition(session),
+    serverNow: Date.now()
+  };
+}
+
+function emitMusicState(channelId) {
+  io.to(channelId).emit('music-state', publicMusicState(roomMusic[channelId]));
+}
+
+function ensureMusicSession(channelId) {
+  if (!roomMusic[channelId]) {
+    roomMusic[channelId] = {
+      queue: [],
+      currentId: null,
+      playing: false,
+      positionSec: 0,
+      updatedAt: Date.now()
+    };
+  }
+  return roomMusic[channelId];
+}
+
+function destroyMusicIfRoomEmpty(channelId) {
+  if (!channelId) return;
+  if ((voiceUsers[channelId] || []).length === 0 && roomMusic[channelId]) {
+    delete roomMusic[channelId];
+  }
+}
+
+function currentMusicChannelOf(socket) {
+  const channelId = socket.currentVoiceChannel;
+  if (!channelId || channelId === WAITING_VOICE_ROOM) return null;
+  const inRoom = (voiceUsers[channelId] || []).some(u => u.socketId === socket.id);
+  return inRoom ? channelId : null;
+}
+
+function musicAdvance(session, direction) {
+  if (!session.queue.length) {
+    session.currentId = null;
+    session.playing = false;
+    session.positionSec = 0;
+    session.updatedAt = Date.now();
+    return;
+  }
+  const idx = session.queue.findIndex(i => i.id === session.currentId);
+  let next = idx + direction;
+  if (next < 0) next = 0;
+  if (next >= session.queue.length) {
+    session.playing = false;
+    session.positionSec = 0;
+    session.updatedAt = Date.now();
+    return;
+  }
+  session.currentId = session.queue[next].id;
+  session.positionSec = 0;
+  session.playing = true;
+  session.updatedAt = Date.now();
+}
+
 // ---------- Canais persistidos no servidor (compartilhados por todo mundo) ----------
 // Antes, os canais só existiam localmente no navegador de cada pessoa: cada um via uma
 // lista diferente e tudo sumia ao dar F5. Agora o servidor é a fonte da verdade: guarda
@@ -1079,6 +1242,8 @@ io.on('connection', (socket) => {
     if (activeRoomStreams[channelId] && activeRoomStreams[channelId].length > 0) {
       socket.emit('sync-active-streams', activeRoomStreams[channelId]);
     }
+
+    socket.emit('music-state', publicMusicState(roomMusic[channelId]));
   });
 
   socket.on('leave-voice-room', (data) => {
@@ -1088,6 +1253,8 @@ io.on('connection', (socket) => {
       socket.leave(channelId);
       io.emit('update-voice-users', voiceUsers);
     }
+    if (socket.currentVoiceChannel === channelId) socket.currentVoiceChannel = null;
+    destroyMusicIfRoomEmpty(channelId);
   });
 
   socket.on('start-streaming', (channelId) => {
@@ -1141,6 +1308,153 @@ io.on('connection', (socket) => {
     });
   });
 
+  // ---------- Ouvir junto ----------
+  socket.on('music-add', async (data) => {
+    const channelId = currentMusicChannelOf(socket);
+    if (!channelId) {
+      socket.emit('music-error', 'Entra numa sala de voz pra tocar música junto.');
+      return;
+    }
+    const now = Date.now();
+    socket.musicAddTimes = (socket.musicAddTimes || []).filter(t => now - t < 10000);
+    if (socket.musicAddTimes.length >= 8) {
+      socket.emit('music-error', 'Calma — espera um pouco pra adicionar mais.');
+      return;
+    }
+    socket.musicAddTimes.push(now);
+
+    const parsed = parseMusicLink(data && data.url);
+    if (!parsed) {
+      socket.emit('music-error', 'Cola o link de um vídeo do YouTube ou de uma faixa do Spotify.');
+      return;
+    }
+
+    const session = ensureMusicSession(channelId);
+    if (session.queue.length >= MUSIC_MAX_QUEUE) {
+      socket.emit('music-error', `A fila já tem ${MUSIC_MAX_QUEUE} itens.`);
+      return;
+    }
+
+    const meta = await lookupMusicMeta(parsed);
+    const item = {
+      id: crypto.randomBytes(8).toString('hex'),
+      type: parsed.type,
+      sourceId: parsed.sourceId,
+      title: meta.title,
+      author: meta.author,
+      thumbnail: meta.thumbnail,
+      addedBy: String(socket.username || 'Alguém').slice(0, 40)
+    };
+    session.queue.push(item);
+    if (!session.currentId) {
+      session.currentId = item.id;
+      session.positionSec = 0;
+      session.playing = true;
+      session.updatedAt = Date.now();
+    }
+    emitMusicState(channelId);
+  });
+
+  socket.on('music-play', () => {
+    const channelId = currentMusicChannelOf(socket);
+    if (!channelId || !roomMusic[channelId]) return;
+    const session = roomMusic[channelId];
+    if (!session.currentId && session.queue[0]) session.currentId = session.queue[0].id;
+    if (!session.currentId) return;
+    freezeMusicPosition(session);
+    session.playing = true;
+    session.updatedAt = Date.now();
+    emitMusicState(channelId);
+  });
+
+  socket.on('music-pause', () => {
+    const channelId = currentMusicChannelOf(socket);
+    if (!channelId || !roomMusic[channelId]) return;
+    const session = roomMusic[channelId];
+    freezeMusicPosition(session);
+    session.playing = false;
+    emitMusicState(channelId);
+  });
+
+  socket.on('music-seek', (data) => {
+    const channelId = currentMusicChannelOf(socket);
+    if (!channelId || !roomMusic[channelId]) return;
+    const seconds = Number(data && data.seconds);
+    if (!Number.isFinite(seconds) || seconds < 0 || seconds > 12 * 3600) return;
+    const session = roomMusic[channelId];
+    session.positionSec = seconds;
+    session.updatedAt = Date.now();
+    emitMusicState(channelId);
+  });
+
+  socket.on('music-skip', () => {
+    const channelId = currentMusicChannelOf(socket);
+    if (!channelId || !roomMusic[channelId]) return;
+    musicAdvance(roomMusic[channelId], 1);
+    emitMusicState(channelId);
+  });
+
+  socket.on('music-prev', () => {
+    const channelId = currentMusicChannelOf(socket);
+    if (!channelId || !roomMusic[channelId]) return;
+    const session = roomMusic[channelId];
+    if (computeMusicPosition(session) > 3) {
+      session.positionSec = 0;
+      session.updatedAt = Date.now();
+    } else {
+      musicAdvance(session, -1);
+    }
+    emitMusicState(channelId);
+  });
+
+  socket.on('music-jump', (data) => {
+    const channelId = currentMusicChannelOf(socket);
+    if (!channelId || !roomMusic[channelId]) return;
+    const itemId = String((data && data.itemId) || '');
+    const session = roomMusic[channelId];
+    if (!session.queue.some(i => i.id === itemId)) return;
+    freezeMusicPosition(session);
+    session.currentId = itemId;
+    session.positionSec = 0;
+    session.playing = true;
+    session.updatedAt = Date.now();
+    emitMusicState(channelId);
+  });
+
+  socket.on('music-remove', (data) => {
+    const channelId = currentMusicChannelOf(socket);
+    if (!channelId || !roomMusic[channelId]) return;
+    const itemId = String((data && data.itemId) || '');
+    const session = roomMusic[channelId];
+    const wasCurrent = session.currentId === itemId;
+    session.queue = session.queue.filter(i => i.id !== itemId);
+    if (wasCurrent) {
+      if (session.queue.length) {
+        session.currentId = session.queue[0].id;
+        session.positionSec = 0;
+        session.playing = true;
+        session.updatedAt = Date.now();
+      } else {
+        session.currentId = null;
+        session.playing = false;
+        session.positionSec = 0;
+        session.updatedAt = Date.now();
+      }
+    }
+    if (!session.queue.length) delete roomMusic[channelId];
+    emitMusicState(channelId);
+  });
+
+  socket.on('music-ended', (data) => {
+    const channelId = currentMusicChannelOf(socket);
+    if (!channelId || !roomMusic[channelId]) return;
+    const itemId = String((data && data.itemId) || '');
+    const session = roomMusic[channelId];
+    if (session.currentId !== itemId) return;
+    musicAdvance(session, 1);
+    emitMusicState(channelId);
+  });
+
   socket.on('disconnect', () => {
     Object.keys(activeRoomStreams).forEach(channelId => {
       activeRoomStreams[channelId] = activeRoomStreams[channelId].filter(id => id !== socket.id);
@@ -1149,7 +1463,9 @@ io.on('connection', (socket) => {
 
     Object.keys(voiceUsers).forEach(channelId => {
       voiceUsers[channelId] = voiceUsers[channelId].filter(u => u.socketId !== socket.id);
+      destroyMusicIfRoomEmpty(channelId);
     });
+    socket.currentVoiceChannel = null;
     io.emit('update-voice-users', voiceUsers);
   });
 });
