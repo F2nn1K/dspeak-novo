@@ -32,10 +32,22 @@ app.get('/', (req, res) => {
 //   CLOUDFLARE_TURN_API_TOKEN    (o "API Token"/"Bearer token" gerado junto)
 const CLOUDFLARE_TURN_KEY_ID = process.env.CLOUDFLARE_TURN_KEY_ID || '';
 const CLOUDFLARE_TURN_API_TOKEN = process.env.CLOUDFLARE_TURN_API_TOKEN || '';
-// Plano B opcional (metered.ca). Sem valor embutido no código: chave de API só
-// entra por variável de ambiente — o repositório é público, qualquer segredo
-// escrito aqui fica exposto pra todo mundo.
+// Opção metered.ca / Open Relay (20 GB/mês grátis, SEM cartão de crédito).
+// Ao criar a conta em metered.ca você escolhe um "app name" — ele vira o domínio
+// (ex: app chamado "meudspeak" → domínio "meudspeak.metered.live"). Configure:
+//   METERED_DOMAIN   = meudspeak.metered.live
+//   METERED_API_KEY  = a API key do painel
+// Nada embutido no código: chaves só por variável de ambiente.
 const METERED_API_KEY = process.env.METERED_API_KEY || '';
+const METERED_DOMAIN = process.env.METERED_DOMAIN || '';
+// Opção genérica: qualquer servidor TURN com credencial fixa (ex: um coturn seu,
+// ou o freeturn.net pra testes). Configure:
+//   TURN_URLS       = turn:servidor.com:3478,turns:servidor.com:5349 (separadas por vírgula)
+//   TURN_USERNAME   = usuario
+//   TURN_CREDENTIAL = senha
+const TURN_URLS = (process.env.TURN_URLS || '').split(',').map(u => u.trim()).filter(Boolean);
+const TURN_USERNAME = process.env.TURN_USERNAME || '';
+const TURN_CREDENTIAL = process.env.TURN_CREDENTIAL || '';
 
 app.get('/turn-credentials', async (req, res) => {
   try {
@@ -62,13 +74,26 @@ app.get('/turn-credentials', async (req, res) => {
       console.error('[DSpeak] Resposta inesperada da Cloudflare TURN:', data);
     }
 
-    // Plano B: metered.ca (só usado se a Cloudflare não estiver configurada, ou se
-    // a chamada acima falhar por algum motivo). Sem chave configurada, devolve
-    // vazio — o cliente já sabe seguir só com STUN.
-    if (!METERED_API_KEY) { res.json([]); return; }
-    const response = await fetch(`https://dspeak.metered.live/api/v1/turn/credentials?apiKey=${METERED_API_KEY}`);
-    const iceServers = await response.json();
-    res.json(iceServers);
+    // Opção metered.ca / Open Relay (só usada se a Cloudflare não estiver
+    // configurada, ou se a chamada acima falhar por algum motivo).
+    if (METERED_API_KEY && METERED_DOMAIN) {
+      const response = await fetch(`https://${METERED_DOMAIN}/api/v1/turn/credentials?apiKey=${METERED_API_KEY}`);
+      const iceServers = await response.json();
+      if (Array.isArray(iceServers)) {
+        res.json(iceServers);
+        return;
+      }
+      console.error('[DSpeak] Resposta inesperada da metered.ca:', iceServers);
+    }
+
+    // Opção genérica: TURN com credencial fixa vinda das variáveis de ambiente.
+    if (TURN_URLS.length && TURN_USERNAME && TURN_CREDENTIAL) {
+      res.json([{ urls: TURN_URLS, username: TURN_USERNAME, credential: TURN_CREDENTIAL }]);
+      return;
+    }
+
+    // Nada configurado: devolve vazio — o cliente já sabe seguir só com STUN.
+    res.json([]);
   } catch (err) {
     console.error('[DSpeak] Não consegui buscar credenciais do TURN:', err);
     res.status(502).json([]); // o cliente já sabe seguir só com STUN se isso vier vazio

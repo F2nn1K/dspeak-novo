@@ -19,9 +19,9 @@ Abra `http://localhost:3000`.
 |---|---|---|
 | `PORT` | não (padrão 3000) | Porta do servidor. Hospedagens como o Render definem sozinhas. |
 | `OWNER_CLAIM_CODE` | recomendada | Código secreto para virar Owner digitando `!owner CODIGO` no chat. **Sem ela, o comando fica desativado.** |
-| `CLOUDFLARE_TURN_KEY_ID` | recomendada | Key ID da TURN Key (painel Cloudflare → Realtime → TURN Server). Necessária para voz funcionar entre redes restritivas. |
-| `CLOUDFLARE_TURN_API_TOKEN` | recomendada | API Token gerado junto com a TURN Key. As duas precisam existir juntas. |
-| `METERED_API_KEY` | não | Plano B de TURN via metered.ca (500 MB/mês no plano grátis). |
+| `METERED_DOMAIN` + `METERED_API_KEY` | recomendadas | TURN grátis via [metered.ca / Open Relay](https://www.metered.ca/tools/openrelay/) (20 GB/mês, **sem cartão de crédito**). O domínio é `SEUAPP.metered.live` (o "app name" escolhido no cadastro). Necessário para a voz funcionar entre redes restritivas. |
+| `CLOUDFLARE_TURN_KEY_ID` + `CLOUDFLARE_TURN_API_TOKEN` | não | Alternativa de TURN via Cloudflare Realtime (1 TB/mês grátis, mas o cadastro exige cartão de crédito). Tem prioridade sobre a metered se as duas estiverem configuradas. |
+| `TURN_URLS` + `TURN_USERNAME` + `TURN_CREDENTIAL` | não | Alternativa genérica: qualquer servidor TURN com credencial fixa (ex.: coturn próprio). |
 | `DATA_DIR` | não | Pasta para dados persistentes (mensagens, cargos, servidores). No Render, aponte para um Persistent Disk; sem isso os dados se perdem a cada deploy. |
 
 ## Deploy no Render (plano Free)
