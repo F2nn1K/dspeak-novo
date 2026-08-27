@@ -379,10 +379,31 @@
     .stage-layout { flex: 1; display: flex; flex-direction: column; gap: 12px; width: 100%; height: 100%; min-height: 0; overflow: hidden; }
     .video-stage-wrapper { flex: 1; min-height: 0; position: relative; display: flex; }
 
-    #streams-container { display: none; flex: 1; min-height: 0; gap: 12px; overflow-y: auto; align-content: center; justify-content: center; flex-wrap: wrap; width: 100%; }
-    
+    /* Layout de "palco": a transmissão principal fica GRANDE em cima, e as outras
+       viram miniaturas numa faixa embaixo — clicou na miniatura, ela sobe pro palco.
+       (Antes ficavam todas lado a lado dividindo o espaço, o que espremia os vídeos
+       em telas menores.) */
+    #streams-container { display: none; flex: 1; min-height: 0; flex-direction: column; gap: 10px; width: 100%; overflow: hidden; }
+
+    #stream-spotlight { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
+    #stream-spotlight .screen-stream-card { width: 100%; height: 100%; }
+
+    #stream-thumbs { display: flex; gap: 10px; height: 118px; flex-shrink: 0; overflow-x: auto; overflow-y: hidden; justify-content: safe center; padding: 3px; }
+    #stream-thumbs:empty { display: none; }
+    #stream-thumbs .screen-stream-card { height: 100%; aspect-ratio: 16/9; flex: 0 0 auto; cursor: pointer; transition: transform 0.12s, border-color 0.12s; }
+    #stream-thumbs .screen-stream-card:hover { border-color: #ff5500; transform: translateY(-2px); }
+    #stream-thumbs .screen-user-badge { top: 6px; left: 6px; padding: 2px 8px; font-size: 10px; }
+    /* Na miniatura não cabem controles — eles ficam disponíveis quando a live está no palco */
+    #stream-thumbs .stream-volume-control, #stream-thumbs .stream-fullscreen-btn, #stream-thumbs .stream-close-btn { display: none; }
+    #stream-thumbs .stream-unblock-btn { font-size: 10px; padding: 5px 8px; }
+
+    /* Telas menores: faixa de miniaturas mais baixa pra sobrar espaço pro palco */
+    @media (max-width: 760px), (max-height: 560px) {
+      #stream-thumbs { height: 74px; }
+    }
+
     .screen-stream-card { 
-      flex: 1; min-width: 320px; max-height: 100%; aspect-ratio: 16/9; background: #0c0d10; border-radius: 14px; 
+      background: #0c0d10; border-radius: 14px; 
       border: 1px solid rgba(255, 85, 0, 0.4); box-shadow: 0 16px 40px rgba(0,0,0,0.8); overflow: hidden; position: relative; display: flex; flex-direction: column; flex-shrink: 0; 
     }
     .screen-stream-card.fullscreen-stage {
@@ -5098,6 +5119,11 @@
       });
     }
 
+    // Qual transmissão está no "palco" (grandona). Quem assiste escolhe clicando
+    // numa miniatura; se a pessoa do palco parar de transmitir, a primeira live
+    // disponível assume o lugar automaticamente.
+    let spotlightStreamKey = null;
+
     function renderStreamsContainer() {
       const container = document.getElementById('streams-container');
 
@@ -5117,6 +5143,16 @@
       }
 
       container.style.display = 'flex';
+
+      if (!spotlightStreamKey || !activeStreams[spotlightStreamKey]) spotlightStreamKey = keys[0];
+
+      const spotlightArea = document.createElement('div');
+      spotlightArea.id = 'stream-spotlight';
+      const thumbsArea = document.createElement('div');
+      thumbsArea.id = 'stream-thumbs';
+      container.appendChild(spotlightArea);
+      container.appendChild(thumbsArea);
+
       keys.forEach(userKey => {
         const card = document.createElement('div');
         card.className = 'screen-stream-card';
@@ -5282,7 +5318,19 @@
 
         card.appendChild(fsBtn);
         if (volumeControl) card.appendChild(volumeControl);
-        container.appendChild(card);
+
+        if (userKey === spotlightStreamKey) {
+          spotlightArea.appendChild(card);
+        } else {
+          // Miniatura: clicar em qualquer lugar dela promove essa live pro palco
+          // (os controles internos já usam stopPropagation, então não conflitam).
+          card.title = 'Clique para colocar no palco';
+          card.onclick = () => {
+            spotlightStreamKey = userKey;
+            renderStreamsContainer();
+          };
+          thumbsArea.appendChild(card);
+        }
       });
     }
 
