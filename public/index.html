@@ -465,6 +465,26 @@
 
     .connected-users-stage { display: flex; flex-wrap: wrap; gap: 12px; align-content: center; justify-content: center; overflow-y: auto; max-height: 170px; padding: 4px; flex-shrink: 0; }
 
+    /* Modo Discord: quando NINGUÉM está transmitindo, os participantes deixam de ser
+       cartõezinhos espremidos embaixo e viram blocos grandes preenchendo o palco
+       inteiro (igual à sala de voz do Discord). Quando alguma live começa, o vídeo
+       toma o palco e os participantes voltam pra faixa compacta de baixo. */
+    .stage-layout.no-streams .video-stage-wrapper { flex: 0 0 0; min-height: 0; position: static; }
+    .stage-layout.no-streams .connected-users-stage {
+      flex: 1; max-height: none; display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+      grid-auto-rows: minmax(160px, 1fr);
+      align-content: stretch; justify-content: stretch;
+    }
+    .stage-layout.no-streams .user-card { width: auto; height: auto; min-height: 160px; gap: 10px; }
+    .stage-layout.no-streams .card-avatar { width: 84px; height: 84px; font-size: 32px; border-width: 3px; }
+    .stage-layout.no-streams .card-name-pill { font-size: 15px; max-width: 240px; }
+    @media (max-width: 760px), (max-height: 560px) {
+      .stage-layout.no-streams .connected-users-stage { grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); grid-auto-rows: minmax(120px, 1fr); }
+      .stage-layout.no-streams .user-card { min-height: 120px; }
+      .stage-layout.no-streams .card-avatar { width: 56px; height: 56px; font-size: 22px; }
+    }
+
     .user-card { width: 150px; height: 104px; border-radius: 14px; background: linear-gradient(135deg, #181b24, #221c2e); display: flex; flex-direction: column; align-items: center; justify-content: center; position: relative; border: 1px solid rgba(255, 85, 0, 0.3); box-shadow: 0 4px 12px rgba(0,0,0,0.6); gap: 6px; }
     .card-avatar { width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; color: #fff; font-size: 17px; background-size: cover; background-position: center; border: 2px solid #ff5500; }
     .card-name-pill { font-size: 13px; font-weight: bold; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 130px; text-align: center; }
@@ -3741,6 +3761,12 @@
     function renderStageUsers() {
       const stage = document.getElementById('connected-users-stage');
       stage.innerHTML = '';
+
+      // Garante o modo certo do palco mesmo antes de qualquer live existir: sem
+      // transmissão os participantes preenchem a tela em blocos grandes (Discord).
+      const stageLayout = document.querySelector('.stage-layout');
+      if (stageLayout) stageLayout.classList.toggle('no-streams', Object.keys(activeStreams).length === 0);
+
       if (!connectedVoiceChannel) return;
 
       const users = voiceChannelUsers[connectedVoiceChannel] || [{ name: username, avatarUrl: userAvatarUrl, socketId: socket.id }];
@@ -5046,15 +5072,20 @@
       }
     });
 
-    // Item 6: a live NÃO abre sozinha. Apenas registramos quem está transmitindo
-    // (pra mostrar o badge "AO VIVO" / botão "Assistir") — a conexão de vídeo real
-    // só é criada quando o usuário clica em "Assistir" (watchLiveStream -> 'request-watch-stream').
+    // Igual ao Discord: quando alguém da NOSSA sala está transmitindo, a live abre
+    // sozinha na tela de todo mundo — ninguém precisa clicar em "Assistir". O botão
+    // "Assistir" continua existindo como reserva: se a conexão automática falhar,
+    // ele reaparece pra pessoa tentar de novo manualmente.
     socket.on('sync-active-streams', (streamingSocketIds) => {
       streamingSocketIds.forEach(targetSocketId => {
         if (targetSocketId !== socket.id) {
           const usersInChannel = voiceChannelUsers[connectedVoiceChannel] || [];
           const targetUser = usersInChannel.find(u => u.socketId === targetSocketId);
           liveStreamers[targetSocketId] = targetUser ? targetUser.name : "Amigo";
+          // Só abre sozinho se o transmissor está na mesma sala que nós (targetUser
+          // encontrado) — lives de outras salas continuam exigindo clique, porque
+          // assistir implicaria em ser movido de sala.
+          if (targetUser) watchLiveStream(targetSocketId);
         }
       });
       renderChannels();
@@ -5067,6 +5098,7 @@
         const targetUser = usersInChannel.find(u => u.socketId === targetSocketId);
         liveStreamers[targetSocketId] = targetUser ? targetUser.name : "Amigo";
         playSound('streamStart');
+        if (targetUser) watchLiveStream(targetSocketId);
         renderChannels();
         renderStageUsers();
       }
@@ -5155,6 +5187,11 @@
       });
       container.innerHTML = '';
       const keys = Object.keys(activeStreams);
+
+      // Modo Discord: sem nenhuma live, o palco vira a grade de participantes grandes;
+      // com live, o vídeo assume o palco e os participantes viram a faixa compacta.
+      const stageLayout = document.querySelector('.stage-layout');
+      if (stageLayout) stageLayout.classList.toggle('no-streams', keys.length === 0);
 
       if (keys.length === 0) {
         container.style.display = 'none';
