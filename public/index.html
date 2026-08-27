@@ -843,7 +843,7 @@
               <div class="opt-card" id="opt-voice-isolation" onclick="toggleVoiceIsolation()">
                 <div>
                   <div class="opt-card-title">Cancelamento de ruído (RNNoise)</div>
-                  <div class="opt-card-sub">Rede neural que remove teclado, ventilador e barulho de fundo, deixando só a sua voz. Roda no seu próprio PC, de graça — clique pra ligar/desligar.</div>
+                  <div class="opt-card-sub">Rede neural que remove teclado, ventilador e barulho de fundo, + filtro de graves e compressor que nivelam o volume da voz (efeito "voz de rádio"). Roda no seu próprio PC, de graça — clique pra ligar/desligar.</div>
                 </div>
                 <div class="opt-radio-dot"></div>
               </div>
@@ -2968,13 +2968,45 @@
         micGateGainNode.gain.value = 0.05;
         micDestNode = micProcessingCtx.createMediaStreamDestination();
 
+        // ---- Cadeia de "polimento" da voz (tudo nativo do navegador, custo ~zero) ----
+        // 1) Passa-alta ~85Hz: corta o ronco grave que sobra mesmo depois do RNNoise
+        //    (vibração de mesa, motor de geladeira/ar, vento no mic). A voz humana não
+        //    tem quase nada abaixo disso, então o timbre não muda.
+        const micHighPass = micProcessingCtx.createBiquadFilter();
+        micHighPass.type = 'highpass';
+        micHighPass.frequency.value = 85;
+        micHighPass.Q.value = 0.7;
+
+        // 2) Compressor: nivela o volume da fala — quem fala baixinho sobe, quem fala
+        //    alto não estoura. É o efeito "voz de rádio/podcast", firme e constante.
+        const micCompressor = micProcessingCtx.createDynamicsCompressor();
+        micCompressor.threshold.value = -24;
+        micCompressor.knee.value = 12;
+        micCompressor.ratio.value = 4;
+        micCompressor.attack.value = 0.003;
+        micCompressor.release.value = 0.25;
+
+        // 3) Limiter (teto duro): garante que nenhum pico (grito, risada, batida no
+        //    mic) passe distorcendo/estalando no ouvido dos outros.
+        const micLimiter = micProcessingCtx.createDynamicsCompressor();
+        micLimiter.threshold.value = -6;
+        micLimiter.knee.value = 0;
+        micLimiter.ratio.value = 20;
+        micLimiter.attack.value = 0.001;
+        micLimiter.release.value = 0.1;
+
         // Ponto onde o portão de ruído (gate) e o medidor de nível vão "escutar" —
-        // normalmente a própria voz crua, mas passa a ser a voz JÁ LIMPA pelo
-        // RNNoise assim que ele terminar de carregar (ver mais abaixo), o que deixa
-        // o gate ainda mais preciso (ruído de fundo já removido antes de medir).
+        // de propósito ANTES do compressor (a voz crua/limpa pelo RNNoise), porque o
+        // compressor levanta sons baixos e poderia enganar o medidor, abrindo o
+        // portão com ruído residual amplificado.
         let gateInputNode = micSourceNode;
 
-        micSourceNode.connect(micGateGainNode);
+        // Caminho do som: microfone (→ RNNoise, quando carregar) → passa-alta →
+        // compressor → limiter → portão de ruído → saída pros outros.
+        micSourceNode.connect(micHighPass);
+        micHighPass.connect(micCompressor);
+        micCompressor.connect(micLimiter);
+        micLimiter.connect(micGateGainNode);
         micGateGainNode.connect(micDestNode);
 
         const analyser = micProcessingCtx.createAnalyser();
@@ -2990,12 +3022,12 @@
             try { rnnoiseNode.disconnect(); } catch (e) {}
             return;
           }
-          // Encaixa o RNNoise ENTRE o microfone cru e o portão de ruído — troca a
-          // conexão direta que já tínhamos feito acima por uma passando pela
-          // limpeza primeiro.
-          micSourceNode.disconnect(micGateGainNode);
+          // Encaixa o RNNoise ENTRE o microfone cru e o resto da cadeia (passa-alta →
+          // compressor → limiter → portão) — troca a conexão direta que já tínhamos
+          // feito acima por uma passando pela limpeza neural primeiro.
+          micSourceNode.disconnect(micHighPass);
           micSourceNode.connect(rnnoiseNode);
-          rnnoiseNode.connect(micGateGainNode);
+          rnnoiseNode.connect(micHighPass);
           gateInputNode = rnnoiseNode;
           analyser.disconnect();
           gateInputNode.connect(analyser);
