@@ -469,20 +469,20 @@
        cartõezinhos espremidos embaixo e viram blocos grandes preenchendo o palco
        inteiro (igual à sala de voz do Discord). Quando alguma live começa, o vídeo
        toma o palco e os participantes voltam pra faixa compacta de baixo. */
-    .stage-layout.no-streams:not(.has-music):not(.music-panel-open) .video-stage-wrapper { flex: 0 0 0; min-height: 0; position: static; }
-    .stage-layout.no-streams:not(.has-music):not(.music-panel-open) .connected-users-stage {
+    .stage-layout.no-streams .video-stage-wrapper { flex: 0 0 0; min-height: 0; position: static; }
+    .stage-layout.no-streams .connected-users-stage {
       flex: 1; max-height: none; display: grid;
       grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
       grid-auto-rows: minmax(160px, 1fr);
       align-content: stretch; justify-content: stretch;
     }
-    .stage-layout.no-streams:not(.has-music):not(.music-panel-open) .user-card { width: auto; height: auto; min-height: 160px; gap: 10px; }
-    .stage-layout.no-streams:not(.has-music):not(.music-panel-open) .card-avatar { width: 84px; height: 84px; font-size: 32px; border-width: 3px; }
-    .stage-layout.no-streams:not(.has-music):not(.music-panel-open) .card-name-pill { font-size: 15px; max-width: 240px; }
+    .stage-layout.no-streams .user-card { width: auto; height: auto; min-height: 160px; gap: 10px; }
+    .stage-layout.no-streams .card-avatar { width: 84px; height: 84px; font-size: 32px; border-width: 3px; }
+    .stage-layout.no-streams .card-name-pill { font-size: 15px; max-width: 240px; }
     @media (max-width: 760px), (max-height: 560px) {
-      .stage-layout.no-streams:not(.has-music):not(.music-panel-open) .connected-users-stage { grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); grid-auto-rows: minmax(120px, 1fr); }
-      .stage-layout.no-streams:not(.has-music):not(.music-panel-open) .user-card { min-height: 120px; }
-      .stage-layout.no-streams:not(.has-music):not(.music-panel-open) .card-avatar { width: 56px; height: 56px; font-size: 22px; }
+      .stage-layout.no-streams .connected-users-stage { grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); grid-auto-rows: minmax(120px, 1fr); }
+      .stage-layout.no-streams .user-card { min-height: 120px; }
+      .stage-layout.no-streams .card-avatar { width: 56px; height: 56px; font-size: 22px; }
     }
 
     .user-card { width: 150px; height: 104px; border-radius: 14px; background: linear-gradient(135deg, #181b24, #221c2e); display: flex; flex-direction: column; align-items: center; justify-content: center; position: relative; border: 1px solid rgba(255, 85, 0, 0.3); box-shadow: 0 4px 12px rgba(0,0,0,0.6); gap: 6px; }
@@ -537,19 +537,30 @@
     #music-engine-mask { position: absolute; inset: 0; z-index: 2; background: #08090c; }
 
     #music-together {
-      display: none; flex-direction: column; flex-shrink: 0; min-height: 0;
-      background: #0c0d10; border: 1px solid rgba(255, 85, 0, 0.35); border-radius: 14px;
-      overflow: hidden; position: relative; z-index: 8;
+      display: none; flex-direction: column;
+      position: absolute; right: 14px; bottom: 14px; width: 268px;
+      background: rgba(12, 13, 16, 0.96); border: 1px solid rgba(255, 85, 0, 0.4); border-radius: 12px;
+      overflow: hidden; z-index: 310; box-shadow: 0 10px 28px rgba(0,0,0,0.75);
     }
-    #music-together.is-visible { display: flex; margin-bottom: 70px; }
-    #music-together.is-open { min-height: 0; max-height: min(52vh, 420px); }
-    .stage-layout.has-music.no-streams #music-together.is-open { max-height: none; }
-    #music-together.is-mini { flex-direction: row; align-items: center; height: 88px; padding: 0 10px; gap: 10px; }
-    #music-together.is-mini .music-cover-wrap { width: 72px; height: 72px; flex-shrink: 0; border-radius: 10px; }
-    #music-together.is-mini .music-queue-wrap, #music-together.is-mini .music-add-row, #music-together.is-mini .music-hint { display: none; }
-    #music-together.is-mini .music-now { padding: 0; border: none; flex: 1; min-width: 0; }
-    .music-cover-wrap { position: relative; background: #12141a; flex-shrink: 0; height: 88px; display: flex; }
-    #music-cover { flex: 1; min-width: 88px; background: #181b24 center/cover no-repeat; }
+    #music-together.is-visible { display: flex; }
+    #music-together.is-open { width: 300px; max-height: min(52vh, 380px); }
+    #music-together.is-visible:not(.is-open) { flex-direction: row; align-items: center; padding: 8px; gap: 8px; }
+    #music-together.is-visible:not(.is-open) .music-cover-wrap { width: 52px; height: 52px; flex-shrink: 0; border-radius: 8px; }
+    #music-together.is-visible:not(.is-open) .music-queue-wrap,
+    #music-together.is-visible:not(.is-open) .music-add-row,
+    #music-together.is-visible:not(.is-open) .music-hint { display: none; }
+    #music-together.is-visible:not(.is-open) .music-now { padding: 0; border: none; flex: 1; min-width: 0; gap: 4px; }
+    #music-together.is-visible:not(.is-open) .music-now-title { font-size: 11px; }
+    #music-together.is-visible:not(.is-open) .music-now-sub { font-size: 9px; }
+    #music-together.is-visible:not(.is-open) .music-ctrl { width: 26px; height: 26px; border-radius: 8px; }
+    #music-together.is-visible:not(.is-open) .music-ctrl svg { width: 13px; height: 13px; }
+    #music-together.is-visible:not(.is-open) .music-time { display: none; }
+    #music-together.is-visible:not(.is-open) .music-vol { width: 48px; }
+    #music-together.is-visible:not(.is-open) #music-unlock p { display: none; }
+    #music-together.is-visible:not(.is-open) #music-unlock span { padding: 4px 7px; font-size: 9px; }
+    .music-cover-wrap { position: relative; background: #12141a; flex-shrink: 0; height: 64px; display: flex; }
+    #music-together.is-open .music-cover-wrap { height: 64px; }
+    #music-cover { flex: 1; min-width: 52px; background: #181b24 center/cover no-repeat; }
     #music-unlock {
       position: absolute; inset: 0; background: rgba(8, 9, 12, 0.82); display: none;
       align-items: center; justify-content: center; z-index: 6; cursor: pointer; flex-direction: column; gap: 6px;
@@ -558,9 +569,9 @@
     #music-unlock span { background: #ff5500; color: #fff; font-weight: 800; padding: 10px 16px; border-radius: 10px; font-size: 13px; }
     #music-unlock p { color: #cfd2d8; font-size: 11px; margin: 0; padding: 0 10px; text-align: center; }
     #music-unlock-banner {
-      display: none; position: absolute; left: 50%; bottom: 92px; transform: translateX(-50%);
+      display: none; position: absolute; right: 14px; bottom: 92px; left: auto; transform: none;
       z-index: 320; background: #ff5500; color: #fff; font-weight: 800; border: none;
-      padding: 12px 18px; border-radius: 12px; cursor: pointer; font-size: 14px;
+      padding: 10px 14px; border-radius: 12px; cursor: pointer; font-size: 12px;
       box-shadow: 0 10px 28px rgba(255,85,0,0.45); white-space: nowrap;
     }
     #music-unlock-banner.visible { display: block; }
@@ -1298,49 +1309,6 @@
             <div class="video-stage-wrapper" id="video-stage-wrapper">
               <div id="streams-container"></div>
 
-              <div id="music-engine" class="idle">
-                <div id="yt-music-host" class="is-idle"><div id="yt-music-player"></div></div>
-                <div id="spotify-music-host" class="is-idle"></div>
-                <div id="music-engine-mask"></div>
-              </div>
-
-              <button type="button" id="music-unlock-banner" onclick="unlockMusicAudio()">🔊 Clique para ouvir a música da sala</button>
-
-              <div id="music-together">
-                <div class="music-cover-wrap">
-                  <div id="music-cover"></div>
-                  <div id="music-unlock" onclick="unlockMusicAudio()">
-                    <span>Clique para ouvir</span>
-                    <p>O som não entra na chamada — cada um libera o player uma vez.</p>
-                  </div>
-                </div>
-                <div class="music-now">
-                  <div class="music-now-top">
-                    <div class="music-now-meta">
-                      <div class="music-now-title" id="music-now-title">Nada tocando</div>
-                      <div class="music-now-sub" id="music-now-sub">Cola um link do YouTube ou Spotify</div>
-                    </div>
-                    <div class="music-controls">
-                      <button class="music-ctrl" title="Anterior" onclick="musicPrev()"><svg viewBox="0 0 24 24"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/></svg></button>
-                      <button class="music-ctrl play" id="music-play-btn" title="Play/Pause" onclick="musicTogglePlay()"><svg viewBox="0 0 24 24" id="music-play-icon"><polygon points="6 4 20 12 6 20 6 4"/></svg></button>
-                      <button class="music-ctrl" title="Próxima" onclick="musicSkip()"><svg viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg></button>
-                    </div>
-                  </div>
-                  <div class="music-progress-row">
-                    <span class="music-time" id="music-time-cur">0:00</span>
-                    <input type="range" id="music-seek" min="0" max="1000" value="0" oninput="musicSeekPreview(this.value)" onchange="musicSeekCommit(this.value)" />
-                    <span class="music-time end" id="music-time-dur">0:00</span>
-                    <input type="range" class="music-vol" id="music-vol" min="0" max="100" value="80" title="Volume local" oninput="setMusicLocalVolume(this.value)" />
-                  </div>
-                </div>
-                <form class="music-add-row" onsubmit="submitMusicUrl(event)">
-                  <input id="music-url-input" type="text" placeholder="Cola o link do YouTube ou Spotify e aperta Enter" autocomplete="off" />
-                  <button type="submit" id="music-add-btn">Adicionar</button>
-                </form>
-                <div class="music-hint">Só o áudio aparece na sala (capa + controles). YouTube toca inteiro. Spotify toca inteiro se você estiver logado no Spotify no navegador — senão costuma ser prévia de 30s. Cada pessoa precisa clicar uma vez pra liberar o som no próprio PC.</div>
-                <div class="music-queue-wrap" id="music-queue"></div>
-              </div>
-
               <div class="stage-controls-dock">
                 <button class="stage-btn" id="stage-mic-btn" onclick="toggleMute()" title="Mutar Microfone">
                   <svg viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
@@ -1366,6 +1334,49 @@
 
             <div class="connected-users-stage" id="connected-users-stage"></div>
           </div>
+        </div>
+
+        <div id="music-engine" class="idle">
+          <div id="yt-music-host" class="is-idle"><div id="yt-music-player"></div></div>
+          <div id="spotify-music-host" class="is-idle"></div>
+          <div id="music-engine-mask"></div>
+        </div>
+
+        <button type="button" id="music-unlock-banner" onclick="unlockMusicAudio()">🔊 Clique para ouvir a música da sala</button>
+
+        <div id="music-together">
+          <div class="music-cover-wrap">
+            <div id="music-cover"></div>
+            <div id="music-unlock" onclick="unlockMusicAudio()">
+              <span>Clique para ouvir</span>
+              <p>O som não entra na chamada — cada um libera o player uma vez.</p>
+            </div>
+          </div>
+          <div class="music-now">
+            <div class="music-now-top">
+              <div class="music-now-meta">
+                <div class="music-now-title" id="music-now-title">Nada tocando</div>
+                <div class="music-now-sub" id="music-now-sub">Cola um link do YouTube ou Spotify</div>
+              </div>
+              <div class="music-controls">
+                <button class="music-ctrl" title="Anterior" onclick="musicPrev()"><svg viewBox="0 0 24 24"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/></svg></button>
+                <button class="music-ctrl play" id="music-play-btn" title="Play/Pause" onclick="musicTogglePlay()"><svg viewBox="0 0 24 24" id="music-play-icon"><polygon points="6 4 20 12 6 20 6 4"/></svg></button>
+                <button class="music-ctrl" title="Próxima" onclick="musicSkip()"><svg viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg></button>
+              </div>
+            </div>
+            <div class="music-progress-row">
+              <span class="music-time" id="music-time-cur">0:00</span>
+              <input type="range" id="music-seek" min="0" max="1000" value="0" oninput="musicSeekPreview(this.value)" onchange="musicSeekCommit(this.value)" />
+              <span class="music-time end" id="music-time-dur">0:00</span>
+              <input type="range" class="music-vol" id="music-vol" min="0" max="100" value="80" title="Volume local" oninput="setMusicLocalVolume(this.value)" />
+            </div>
+          </div>
+          <form class="music-add-row" onsubmit="submitMusicUrl(event)">
+            <input id="music-url-input" type="text" placeholder="Cola o link do YouTube ou Spotify e aperta Enter" autocomplete="off" />
+            <button type="submit" id="music-add-btn">Adicionar</button>
+          </form>
+          <div class="music-hint">Só o áudio aparece na sala (capa + controles). YouTube toca inteiro. Spotify toca inteiro se você estiver logado no Spotify no navegador — senão costuma ser prévia de 30s. Cada pessoa precisa clicar uma vez pra liberar o som no próprio PC.</div>
+          <div class="music-queue-wrap" id="music-queue"></div>
         </div>
       </div>
 
@@ -4175,7 +4186,6 @@
       if (root) {
         root.classList.toggle('is-visible', visible);
         root.classList.toggle('is-open', musicPanelOpen);
-        root.classList.toggle('is-mini', visible && !musicPanelOpen && !!item);
       }
       if (btn) btn.classList.toggle('active-music', musicPanelOpen || !!(musicState && musicState.playing));
       const titleEl = document.getElementById('music-now-title');
