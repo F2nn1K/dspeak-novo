@@ -372,6 +372,19 @@
     .content-workspace { flex: 1; display: flex; flex-direction: row; overflow: hidden; min-height: 0; }
     .content-workspace.text-mode #voice-room-view { display: none; }
     .content-workspace.text-mode #right-chat-sidebar { width: 100%; flex: 1; border-left: none; }
+    /* Em sala de voz o chat lateral começa escondido — abre/fecha pelo botão no topo.
+       O :not(.text-mode) garante que isso NUNCA afete canal de texto, onde o chat é a
+       própria tela. */
+    .content-workspace.chat-collapsed:not(.text-mode) #right-chat-sidebar { display: none; }
+
+    #toggle-chat-btn {
+      position: relative; background: transparent; border: 1px solid rgba(255, 85, 0, 0.3); border-radius: 8px;
+      width: 34px; height: 34px; display: none; align-items: center; justify-content: center; cursor: pointer; transition: background 0.15s;
+    }
+    #toggle-chat-btn:hover { background: rgba(255, 85, 0, 0.15); }
+    #toggle-chat-btn.chat-open { background: #ff5500; border-color: #ff5500; }
+    #toggle-chat-btn svg { width: 18px; height: 18px; stroke: #fff; stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+    #toggle-chat-btn .chat-unread-dot { position: absolute; top: -4px; right: -4px; width: 11px; height: 11px; border-radius: 50%; background: #ff3333; border: 2px solid #13151b; display: none; }
 
     #voice-room-view { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; background: #08090c; padding: 16px; gap: 12px; }
     .voice-main-content { flex: 1; display: flex; flex-direction: column; position: relative; height: 100%; overflow: hidden; gap: 12px; }
@@ -1149,6 +1162,12 @@
       <div class="dm-header-left">
         <div id="chat-header-user-info"><span id="chat-header-title"># geral</span></div>
       </div>
+      <!-- Botão de abrir/fechar o chat lateral — só aparece em sala de voz (em canal
+           de texto o chat É a tela, não faz sentido esconder). -->
+      <button id="toggle-chat-btn" onclick="toggleVoiceChat()" title="Mostrar/Esconder chat">
+        <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        <span class="chat-unread-dot" id="chat-unread-dot"></span>
+      </button>
     </div>
 
     <div class="content-workspace">
@@ -5842,6 +5861,33 @@
     function switchWorkspaceLayout(isVoice) {
       const workspace = document.querySelector('.content-workspace');
       workspace.classList.toggle('text-mode', !isVoice);
+      // O botão de abrir/fechar chat só existe em sala de voz.
+      document.getElementById('toggle-chat-btn').style.display = isVoice ? 'flex' : 'none';
+      applyVoiceChatVisibility();
+    }
+
+    // ---------- Chat lateral da sala de voz (escondido por padrão) ----------
+    // A escolha fica salva no navegador: quem prefere o chat sempre aberto abre uma
+    // vez e ele continua aberto nas próximas sessões.
+    let voiceChatHidden = localStorage.getItem('dspeak_voice_chat_hidden') !== '0';
+
+    function applyVoiceChatVisibility() {
+      const workspace = document.querySelector('.content-workspace');
+      workspace.classList.toggle('chat-collapsed', voiceChatHidden);
+      const btn = document.getElementById('toggle-chat-btn');
+      btn.classList.toggle('chat-open', !voiceChatHidden);
+      if (!voiceChatHidden) {
+        document.getElementById('chat-unread-dot').style.display = 'none';
+        // Com o chat reaberto, desce pro fim da conversa (senão fica no topo).
+        const list = document.getElementById('chat-messages-list');
+        list.scrollTop = list.scrollHeight;
+      }
+    }
+
+    function toggleVoiceChat() {
+      voiceChatHidden = !voiceChatHidden;
+      localStorage.setItem('dspeak_voice_chat_hidden', voiceChatHidden ? '1' : '0');
+      applyVoiceChatVisibility();
     }
 
     socket.on('channel-history', (data) => {
@@ -5897,6 +5943,12 @@
 
       if (data.room === activeChannel) {
         appendMessageToDOM(data);
+        // Chat lateral fechado numa sala de voz? Acende a bolinha no botão pra
+        // avisar que chegou mensagem, sem abrir nada sozinho.
+        const workspace = document.querySelector('.content-workspace');
+        if (voiceChatHidden && !workspace.classList.contains('text-mode') && data.user !== username) {
+          document.getElementById('chat-unread-dot').style.display = 'block';
+        }
       } else if (data.user !== username) {
         // Mensagem chegou de outro canal: acende o badge vermelho ali, sem interromper
         // quem está lendo o canal atual.
