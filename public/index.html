@@ -390,7 +390,7 @@
     .voice-main-content { flex: 1; display: flex; flex-direction: column; position: relative; height: 100%; overflow: hidden; gap: 12px; }
 
     .stage-layout { flex: 1; display: flex; flex-direction: column; gap: 12px; width: 100%; height: 100%; min-height: 0; overflow: hidden; }
-    .video-stage-wrapper { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
+    .video-stage-wrapper { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; isolation: isolate; }
 
     /* Layout de "palco": a transmissão principal fica GRANDE em cima, e as outras
        viram miniaturas numa faixa embaixo — clicou na miniatura, ela sobe pro palco.
@@ -524,21 +524,23 @@
     .stage-btn.active-share { background: #ff3333 !important; border-color: #ff3333 !important; }
     .stage-btn.active-music { background: #ff5500; border-color: #ff5500; box-shadow: 0 0 12px rgba(255, 85, 0, 0.55); }
 
-    /* Ouvir junto: a pessoa vê só capa + controles. O iframe oficial do YouTube
-       fica num bloco 320x180 (eles recusam player minúsculo) coberto pela máscara. */
+    /* Ouvir junto: a pessoa vê só capa + controles. O iframe oficial precisa ter
+       ~320x180 (o YouTube recusa player minúsculo), mas o vídeo dele é camada de
+       GPU — fura máscara CSS e vira o retângulo preto em cima da live. O motor
+       fica fora da janela, no body, tocando só o áudio. */
     #music-engine {
-      position: absolute; width: 320px; height: 180px; left: 16px; top: 16px;
-      z-index: 1; overflow: hidden; border-radius: 10px; pointer-events: none;
+      position: fixed; width: 320px; height: 180px; left: -10000px; top: 0;
+      z-index: 0; overflow: hidden; pointer-events: none;
     }
     #music-engine.idle { visibility: hidden; }
     #yt-music-host, #spotify-music-host { position: absolute; inset: 0; }
-    #yt-music-host iframe, #spotify-music-host iframe, #yt-music-player { width: 100% !important; height: 100% !important; }
+    #yt-music-host iframe, #spotify-music-host iframe, #yt-music-player { width: 100% !important; height: 100% !important; border: 0; }
     #yt-music-host.is-idle, #spotify-music-host.is-idle { visibility: hidden; }
-    #music-engine-mask { position: absolute; inset: 0; z-index: 2; background: #08090c; }
 
     #music-together {
       display: none; flex-direction: column;
-      position: absolute; right: 14px; bottom: 14px; width: 268px;
+      position: absolute; right: 14px; top: 14px; bottom: auto; width: 268px;
+      max-width: calc(100% - 28px);
       background: rgba(12, 13, 16, 0.96); border: 1px solid rgba(255, 85, 0, 0.4); border-radius: 12px;
       overflow: hidden; z-index: 310; box-shadow: 0 10px 28px rgba(0,0,0,0.75);
     }
@@ -569,12 +571,32 @@
     #music-unlock span { background: #ff5500; color: #fff; font-weight: 800; padding: 10px 16px; border-radius: 10px; font-size: 13px; }
     #music-unlock p { color: #cfd2d8; font-size: 11px; margin: 0; padding: 0 10px; text-align: center; }
     #music-unlock-banner {
-      display: none; position: absolute; right: 14px; bottom: 92px; left: auto; transform: none;
+      display: none; position: absolute; right: 14px; top: 86px; bottom: auto; left: auto; transform: none;
       z-index: 320; background: #ff5500; color: #fff; font-weight: 800; border: none;
       padding: 10px 14px; border-radius: 12px; cursor: pointer; font-size: 12px;
       box-shadow: 0 10px 28px rgba(255,85,0,0.45); white-space: nowrap;
     }
     #music-unlock-banner.visible { display: block; }
+    #voice-room-view.music-panel-open #music-unlock-banner.visible { display: none; }
+
+    /* Sem live, a grade de nomes ocupa o palco inteiro — reserva faixa à direita
+       (ou em cima, em janela estreita) pra o mini player não cobrir os cartões. */
+    #voice-room-view.has-music-ui:not(.has-streams) .connected-users-stage {
+      padding-right: 284px;
+    }
+    #voice-room-view.music-panel-open:not(.has-streams) .connected-users-stage {
+      padding-right: 316px;
+    }
+    @media (max-width: 820px), (max-height: 640px) {
+      #music-together.is-visible:not(.is-open) { width: min(228px, calc(100% - 24px)); }
+      #voice-room-view.has-music-ui:not(.has-streams):not(.music-panel-open) .connected-users-stage {
+        padding-right: 8px;
+        padding-top: 76px;
+      }
+      #voice-room-view.music-panel-open:not(.has-streams) .connected-users-stage {
+        padding-right: 8px;
+      }
+    }
     .music-now { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-top: 1px solid rgba(255,85,0,0.18); flex-shrink: 0; }
     .music-now-top { display: flex; align-items: center; gap: 10px; min-width: 0; }
     .music-now-meta { flex: 1; min-width: 0; }
@@ -1336,12 +1358,6 @@
           </div>
         </div>
 
-        <div id="music-engine" class="idle">
-          <div id="yt-music-host" class="is-idle"><div id="yt-music-player"></div></div>
-          <div id="spotify-music-host" class="is-idle"></div>
-          <div id="music-engine-mask"></div>
-        </div>
-
         <button type="button" id="music-unlock-banner" onclick="unlockMusicAudio()">🔊 Clique para ouvir a música da sala</button>
 
         <div id="music-together">
@@ -1414,6 +1430,11 @@
         </div>
       </div>
     </div>
+  </div>
+
+  <div id="music-engine" class="idle" aria-hidden="true">
+    <div id="yt-music-host" class="is-idle"><div id="yt-music-player"></div></div>
+    <div id="spotify-music-host" class="is-idle"></div>
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
@@ -4103,12 +4124,20 @@
 
     function updateStageLayoutClasses() {
       const stageLayout = document.querySelector('.stage-layout');
-      if (!stageLayout) return;
+      const voiceRoom = document.getElementById('voice-room-view');
       const hasStreams = Object.keys(activeStreams).length > 0;
       const hasMusic = !!(musicState && musicState.currentId);
-      stageLayout.classList.toggle('no-streams', !hasStreams);
-      stageLayout.classList.toggle('has-music', hasMusic);
-      stageLayout.classList.toggle('music-panel-open', musicPanelOpen);
+      const musicUi = musicPanelOpen || hasMusic;
+      if (stageLayout) {
+        stageLayout.classList.toggle('no-streams', !hasStreams);
+        stageLayout.classList.toggle('has-music', hasMusic);
+        stageLayout.classList.toggle('music-panel-open', musicPanelOpen);
+      }
+      if (voiceRoom) {
+        voiceRoom.classList.toggle('has-streams', hasStreams);
+        voiceRoom.classList.toggle('has-music-ui', musicUi);
+        voiceRoom.classList.toggle('music-panel-open', musicPanelOpen);
+      }
     }
 
     function currentMusicItem() {
@@ -4365,7 +4394,17 @@
             origin: location.origin
           },
           events: {
-            onReady: () => resolve(player),
+            onReady: () => {
+              try {
+                const iframe = player.getIframe && player.getIframe();
+                if (iframe) {
+                  iframe.setAttribute('tabindex', '-1');
+                  iframe.setAttribute('aria-hidden', 'true');
+                  iframe.style.pointerEvents = 'none';
+                }
+              } catch (e) {}
+              resolve(player);
+            },
             onStateChange: (e) => onYtStateChange(e),
             onError: (e) => {
               console.warn('[Música] YouTube recusou o vídeo', e && e.data);
