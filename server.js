@@ -210,21 +210,30 @@ app.use('/uploads', express.static(UPLOADS_DIR, {
 const MAX_UPLOAD_SIZE = 10 * 1024 * 1024; // 10MB
 
 const upload = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, UPLOADS_DIR),
-    filename: (req, file, cb) => {
-      // Nome aleatório no disco (evita colisão/sobrescrita), mas guardamos o nome
-      // original pra mostrar/baixar com o nome de verdade depois.
-      const randomName = crypto.randomBytes(16).toString('hex');
-      const ext = path.extname(file.originalname);
-      cb(null, randomName + ext);
-    }
-  }),
+  storage: multer.memoryStorage(),
   limits: { fileSize: MAX_UPLOAD_SIZE }
 });
 
+function safeUploadId(originalName) {
+  const ext = path.extname(String(originalName || '')).toLowerCase().replace(/[^a-z0-9.]/g, '').slice(0, 10);
+  return crypto.randomBytes(16).toString('hex') + ext;
+}
+
+function sendUploadedFile(res, filename, mimetype, data) {
+  const ext = path.extname(String(filename || '')).toLowerCase();
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  if (FORCE_DOWNLOAD_EXTS.has(ext)) {
+    res.setHeader('Content-Disposition', 'attachment');
+    res.setHeader('Content-Type', 'application/octet-stream');
+  } else {
+    res.setHeader('Content-Type', mimetype || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(filename || 'arquivo')}"`);
+  }
+  res.end(data);
+}
+
 app.post('/upload', (req, res) => {
-  upload.single('file')(req, res, (err) => {
+  upload.single('file')(req, res, async (err) => {
     if (err) {
       const isTooBig = err.code === 'LIMIT_FILE_SIZE';
       return res.status(isTooBig ? 413 : 400).json({
@@ -233,13 +242,47 @@ app.post('/upload', (req, res) => {
     }
     if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo recebido.' });
 
-    res.json({
-      url: `/uploads/${req.file.filename}`,
-      filename: req.file.originalname,
-      size: req.file.size,
-      mimetype: req.file.mimetype
-    });
+    const id = safeUploadId(req.file.originalname);
+    try {
+      if (db.enabled) {
+        await db.saveChatFile({
+          id,
+          filename: req.file.originalname,
+          mimetype: req.file.mimetype,
+          data: req.file.buffer
+        });
+        return res.json({
+          url: `/files/${id}`,
+          filename: req.file.originalname,
+          size: req.file.size,
+          mimetype: req.file.mimetype
+        });
+      }
+      fs.writeFileSync(path.join(UPLOADS_DIR, id), req.file.buffer);
+      res.json({
+        url: `/uploads/${id}`,
+        filename: req.file.originalname,
+        size: req.file.size,
+        mimetype: req.file.mimetype
+      });
+    } catch (e) {
+      console.error('[DSpeak] Falha ao gravar upload:', e);
+      res.status(500).json({ error: 'Não foi possível enviar o arquivo.' });
+    }
   });
+});
+
+app.get('/files/:id', async (req, res) => {
+  const id = String(req.params.id || '');
+  if (!/^[a-f0-9]{32}(\.[a-z0-9]{1,10})?$/i.test(id)) return res.status(404).end();
+  try {
+    const row = await db.getChatFile(id);
+    if (!row) return res.status(404).end();
+    sendUploadedFile(res, row.filename, row.mimetype, row.data);
+  } catch (e) {
+    console.error('[DSpeak] Falha ao ler arquivo:', e);
+    res.status(500).end();
+  }
 });
 
 const voiceUsers = {};
@@ -776,6 +819,7 @@ function persistAccount(key, acc) {
       usernameKey: key,
       username: acc.username,
       passwordHash: acc.passwordHash,
+      recoveryHash: acc.recoveryHash || null,
       avatarUrl: acc.avatarUrl || null,
       sessionToken: acc.sessionToken || null,
       createdAt: acc.createdAt || Date.now()
@@ -783,6 +827,17 @@ function persistAccount(key, acc) {
   }
   saveAccounts();
   return Promise.resolve();
+}
+
+function newRecoveryCode() {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let raw = '';
+  for (let i = 0; i < 12; i++) raw += alphabet[crypto.randomInt(alphabet.length)];
+  return `${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(8, 12)}`;
+}
+
+function normalizeRecoveryCode(code) {
+  return String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 }
 
 function attachUserSession(socket, username, avatarUrl) {
@@ -844,13 +899,42 @@ io.on('connection', (socket) => {
         acc = {
           username,
           passwordHash: hashServerPassword(password),
+          recoveryHash: '',
           avatarUrl: incomingAvatar,
           sessionToken: newSessionToken(),
           createdAt: Date.now()
         };
+        const recoveryCode = newRecoveryCode();
+        acc.recoveryHash = hashServerPassword(normalizeRecoveryCode(recoveryCode));
         await persistAccount(key, acc);
         attachUserSession(socket, username, acc.avatarUrl);
-        socket.emit('auth-ok', { username, avatarUrl: acc.avatarUrl || '', token: acc.sessionToken });
+        socket.emit('auth-ok', { username, avatarUrl: acc.avatarUrl || '', token: acc.sessionToken, recoveryCode });
+        return;
+      }
+
+      if (mode === 'recover') {
+        const recoveryCode = data && data.recoveryCode;
+        if (!acc) {
+          socket.emit('auth-failed', { message: 'Não achei uma conta com esse apelido. Cria uma em "Criar conta".' });
+          return;
+        }
+        if (!acc.recoveryHash) {
+          socket.emit('auth-failed', { message: 'Essa conta ainda não tem código de recuperação. Entra com a senha e gera um em Configurações.' });
+          return;
+        }
+        if (!verifyServerPassword(normalizeRecoveryCode(recoveryCode), acc.recoveryHash)) {
+          socket.emit('auth-failed', { message: 'Código de recuperação incorreto.' });
+          return;
+        }
+        if (!isValidPassword(password)) {
+          socket.emit('auth-failed', { message: 'A nova senha precisa ter pelo menos 6 caracteres.' });
+          return;
+        }
+        acc.passwordHash = hashServerPassword(password);
+        acc.sessionToken = newSessionToken();
+        await persistAccount(key, acc);
+        attachUserSession(socket, acc.username, acc.avatarUrl);
+        socket.emit('auth-ok', { username: acc.username, avatarUrl: acc.avatarUrl || '', token: acc.sessionToken });
         return;
       }
 
@@ -885,6 +969,62 @@ io.on('connection', (socket) => {
     if (!VALID_STATUSES.includes(status)) return;
     userStatuses[socket.usernameKey] = status;
     broadcastStatuses();
+  });
+
+  socket.on('change-password', async (data) => {
+    try {
+      if (!socket.usernameKey) {
+        socket.emit('password-changed', { ok: false, message: 'Entra na conta primeiro.' });
+        return;
+      }
+      const acc = accounts[socket.usernameKey];
+      if (!acc) {
+        socket.emit('password-changed', { ok: false, message: 'Conta não encontrada.' });
+        return;
+      }
+      const currentPassword = data && data.currentPassword;
+      const newPassword = data && data.newPassword;
+      if (!acc.passwordHash || !verifyServerPassword(currentPassword, acc.passwordHash)) {
+        socket.emit('password-changed', { ok: false, message: 'Senha atual incorreta.' });
+        return;
+      }
+      if (!isValidPassword(newPassword)) {
+        socket.emit('password-changed', { ok: false, message: 'A nova senha precisa ter pelo menos 6 caracteres.' });
+        return;
+      }
+      acc.passwordHash = hashServerPassword(newPassword);
+      acc.sessionToken = newSessionToken();
+      await persistAccount(socket.usernameKey, acc);
+      socket.emit('password-changed', { ok: true, token: acc.sessionToken, message: 'Senha atualizada.' });
+    } catch (e) {
+      console.error('[DSpeak] Falha ao trocar senha:', e);
+      socket.emit('password-changed', { ok: false, message: 'Não deu pra trocar a senha agora.' });
+    }
+  });
+
+  socket.on('new-recovery-code', async (data) => {
+    try {
+      if (!socket.usernameKey) {
+        socket.emit('recovery-code-failed', { message: 'Entra na conta primeiro.' });
+        return;
+      }
+      const acc = accounts[socket.usernameKey];
+      if (!acc) {
+        socket.emit('recovery-code-failed', { message: 'Conta não encontrada.' });
+        return;
+      }
+      if (!acc.passwordHash || !verifyServerPassword(data && data.password, acc.passwordHash)) {
+        socket.emit('recovery-code-failed', { message: 'Senha atual incorreta.' });
+        return;
+      }
+      const recoveryCode = newRecoveryCode();
+      acc.recoveryHash = hashServerPassword(normalizeRecoveryCode(recoveryCode));
+      await persistAccount(socket.usernameKey, acc);
+      socket.emit('recovery-code', { code: recoveryCode });
+    } catch (e) {
+      console.error('[DSpeak] Falha ao gerar código de recuperação:', e);
+      socket.emit('recovery-code-failed', { message: 'Não deu pra gerar o código agora.' });
+    }
   });
 
   // Atualiza apelido/avatar em tempo real pra todo mundo, sem precisar de F5.
@@ -1710,6 +1850,7 @@ async function boot() {
         accounts[row.username_key] = {
           username: row.username,
           passwordHash: row.password_hash,
+          recoveryHash: row.recovery_hash || '',
           avatarUrl: row.avatar_url || '',
           sessionToken: row.session_token || '',
           createdAt: Number(row.created_at) || Date.now()

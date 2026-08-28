@@ -47,8 +47,16 @@ async function init() {
       created_at BIGINT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS users_session_token ON users (session_token);
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS recovery_hash TEXT;
+    CREATE TABLE IF NOT EXISTS chat_files (
+      id TEXT PRIMARY KEY,
+      filename TEXT NOT NULL,
+      mimetype TEXT,
+      data BYTEA NOT NULL,
+      created_at BIGINT NOT NULL
+    );
   `);
-  console.log('[DSpeak] Postgres (Supabase) conectado — dados de salas, chat e contas ficam no banco.');
+  console.log('[DSpeak] Postgres (Supabase) conectado — dados de salas, chat, contas e arquivos ficam no banco.');
 }
 
 async function getKv(key) {
@@ -101,7 +109,7 @@ async function loadSnapshot() {
     getKv('roles'),
     getKv('messages'),
     getKv('dms'),
-    query('SELECT username_key, username, password_hash, avatar_url, session_token, created_at FROM users')
+    query('SELECT username_key, username, password_hash, recovery_hash, avatar_url, session_token, created_at FROM users')
   ]);
   return {
     channels: Array.isArray(channels) ? channels : null,
@@ -116,17 +124,19 @@ async function loadSnapshot() {
 async function upsertUser(user) {
   if (!enabled) return;
   await query(
-    `INSERT INTO users (username_key, username, password_hash, avatar_url, session_token, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO users (username_key, username, password_hash, recovery_hash, avatar_url, session_token, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      ON CONFLICT (username_key) DO UPDATE SET
        username = EXCLUDED.username,
        password_hash = EXCLUDED.password_hash,
+       recovery_hash = EXCLUDED.recovery_hash,
        avatar_url = EXCLUDED.avatar_url,
        session_token = EXCLUDED.session_token`,
     [
       user.usernameKey,
       user.username,
       user.passwordHash,
+      user.recoveryHash || null,
       user.avatarUrl || null,
       user.sessionToken || null,
       user.createdAt || Date.now()
@@ -144,6 +154,21 @@ async function updateUserToken(usernameKey, sessionToken) {
   await query('UPDATE users SET session_token = $2 WHERE username_key = $1', [usernameKey, sessionToken]);
 }
 
+async function saveChatFile(file) {
+  if (!enabled) return;
+  await query(
+    `INSERT INTO chat_files (id, filename, mimetype, data, created_at)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [file.id, file.filename, file.mimetype || null, file.data, Date.now()]
+  );
+}
+
+async function getChatFile(id) {
+  if (!enabled) return null;
+  const r = await query('SELECT id, filename, mimetype, data FROM chat_files WHERE id = $1', [id]);
+  return r.rows[0] || null;
+}
+
 module.exports = {
   enabled,
   init,
@@ -152,5 +177,7 @@ module.exports = {
   flushAll,
   upsertUser,
   updateUserAvatar,
-  updateUserToken
+  updateUserToken,
+  saveChatFile,
+  getChatFile
 };

@@ -176,6 +176,12 @@
     #auth-error { display: none; font-size: 13px; color: #ff6b6b; background: rgba(255,51,51,0.12); border: 1px solid rgba(255,51,51,0.35); border-radius: 8px; padding: 8px 10px; }
     #auth-error.visible { display: block; }
     .auth-logo { font-size: 24px; font-weight: 800; color: #ff5500; text-align: center; text-shadow: 0 0 12px rgba(255,85,0,0.5); }
+    .auth-forgot-link { background: none; border: none; color: #8a8f9d; font-size: 12px; cursor: pointer; padding: 0; text-align: center; }
+    .auth-forgot-link:hover { color: #ff5500; }
+    #auth-recovery-wrap, #auth-back-login { display: none; }
+    #recovery-code-overlay { position: fixed; inset: 0; background: rgba(12, 13, 16, 0.96); z-index: 8000; display: none; align-items: center; justify-content: center; padding: 20px; }
+    #recovery-code-overlay.visible { display: flex; }
+    .recovery-code-box { font-family: ui-monospace, Consolas, monospace; font-size: 22px; letter-spacing: 2px; text-align: center; background: #0c0d10; border: 1px dashed rgba(255,85,0,0.55); color: #ffaa66; padding: 14px; border-radius: 10px; user-select: all; }
 
     #servers-sidebar { width: 78px; background: #0f1117; display: flex; flex-direction: column; align-items: center; padding: 16px 0; gap: 10px; flex-shrink: 0; overflow-y: auto; border-right: 1px solid rgba(255, 85, 0, 0.12); }
     
@@ -828,12 +834,28 @@
           <label>Apelido</label>
           <input type="text" id="nickname-input" placeholder="Ex: Daniel" maxlength="24" autofocus onkeypress="if(event.key==='Enter') document.getElementById('password-input').focus()" />
         </div>
-        <div class="modal-field">
-          <label>Senha</label>
+        <div class="modal-field" id="auth-recovery-wrap">
+          <label>Código de recuperação</label>
+          <input type="text" id="recovery-input" placeholder="XXXX-XXXX-XXXX" maxlength="20" autocomplete="off" onkeypress="if(event.key==='Enter') document.getElementById('password-input').focus()" />
+        </div>
+        <div class="modal-field" id="auth-password-wrap">
+          <label id="auth-password-label">Senha</label>
           <input type="password" id="password-input" placeholder="Mínimo 6 caracteres" maxlength="72" onkeypress="if(event.key==='Enter') connectToServer()" />
         </div>
         <button class="btn-create" id="auth-submit-btn" onclick="connectToServer()" style="width: 100%;">Entrar</button>
+        <button type="button" class="auth-forgot-link" id="auth-forgot-link" onclick="setAuthMode('recover')">Esqueci a senha</button>
+        <button type="button" class="auth-forgot-link" id="auth-back-login" onclick="setAuthMode('login')">Voltar ao login</button>
       </div>
+    </div>
+  </div>
+
+  <div id="recovery-code-overlay">
+    <div class="auth-card" style="max-width: 460px;">
+      <div class="auth-logo">GUARDA ESTE CÓDIGO</div>
+      <div style="font-size: 13px; color: #8a8f9d; text-align: center; margin-top: -8px;">Sem ele você não recupera a senha. Anota num lugar seguro — a gente não mostra de novo.</div>
+      <div class="recovery-code-box" id="recovery-code-value"></div>
+      <button class="btn-create" onclick="copyRecoveryCode()" style="width: 100%;">Copiar código</button>
+      <button type="button" class="auth-forgot-link" onclick="closeRecoveryCodeModal()">Já anotei, continuar</button>
     </div>
   </div>
 
@@ -973,6 +995,18 @@
               <input type="text" id="new-nickname-input" placeholder="Seu apelido" disabled />
               <div style="font-size: 11px; color: #8a8f9d; margin-top: 6px;">O apelido é o nome da conta e não pode ser trocado. Pra usar outro, sai e cria uma conta nova.</div>
             </div>
+
+            <div class="modal-field">
+              <label>Senha atual</label>
+              <input type="password" id="current-password-input" placeholder="Precisa pra trocar senha ou gerar código" maxlength="72" autocomplete="current-password" />
+            </div>
+            <div class="modal-field">
+              <label>Nova senha</label>
+              <input type="password" id="new-password-input" placeholder="Mínimo 6 caracteres" maxlength="72" autocomplete="new-password" />
+            </div>
+            <button type="button" class="btn-create" onclick="changeAccountPassword()" style="width: 100%;">Trocar senha</button>
+            <button type="button" class="btn-create" onclick="generateRecoveryCode()" style="width: 100%; margin-top: 8px; background: #181b24; box-shadow: none; border: 1px solid rgba(255,85,0,0.35);">Gerar código de recuperação</button>
+            <div id="settings-password-msg" style="display:none; font-size: 12px; margin-top: 8px;"></div>
 
             <button class="btn-logout" onclick="logoutUser()">Sair da conta</button>
           </div>
@@ -2085,12 +2119,17 @@
 
     function setAuthMode(mode) {
       authMode = mode;
+      const isRecover = mode === 'recover';
       document.getElementById('auth-tab-login').classList.toggle('active', mode === 'login');
       document.getElementById('auth-tab-register').classList.toggle('active', mode === 'register');
-      document.getElementById('auth-submit-btn').textContent = mode === 'register' ? 'Criar conta' : 'Entrar';
+      document.getElementById('auth-recovery-wrap').style.display = isRecover ? 'block' : 'none';
+      document.getElementById('auth-forgot-link').style.display = mode === 'login' ? 'block' : 'none';
+      document.getElementById('auth-back-login').style.display = isRecover ? 'block' : 'none';
+      document.getElementById('auth-password-label').textContent = isRecover ? 'Nova senha' : 'Senha';
+      document.getElementById('auth-submit-btn').textContent = mode === 'register' ? 'Criar conta' : (isRecover ? 'Redefinir senha' : 'Entrar');
       document.getElementById('auth-subtitle').textContent = mode === 'register'
         ? 'Cria um apelido e uma senha — só você entra nessa conta'
-        : 'Entra na sua conta ou cria uma nova';
+        : (isRecover ? 'Usa o código que apareceu quando você criou a conta' : 'Entra na sua conta ou cria uma nova');
       document.getElementById('auth-error').classList.remove('visible');
     }
 
@@ -2105,14 +2144,22 @@
     function connectToServer() {
       const inputName = document.getElementById('nickname-input').value.trim();
       const password = document.getElementById('password-input').value;
+      const recoveryCode = (document.getElementById('recovery-input').value || '').trim();
       if (!inputName) { showAuthError('Digite um apelido.'); return; }
-      if (!password || password.length < 6) { showAuthError('A senha precisa ter pelo menos 6 caracteres.'); return; }
+      if (authMode === 'recover') {
+        if (!recoveryCode) { showAuthError('Digite o código de recuperação.'); return; }
+        if (!password || password.length < 6) { showAuthError('A nova senha precisa ter pelo menos 6 caracteres.'); return; }
+      } else if (!password || password.length < 6) {
+        showAuthError('A senha precisa ter pelo menos 6 caracteres.');
+        return;
+      }
 
       username = inputName;
       document.getElementById('auth-submit-btn').disabled = true;
       socket.emit('register-user', {
         username,
         password,
+        recoveryCode,
         avatarUrl: userAvatarUrl,
         mode: authMode
       });
@@ -2165,6 +2212,7 @@
       if (userAvatarUrl) localStorage.setItem('dspeak_avatar', userAvatarUrl);
       else localStorage.removeItem('dspeak_avatar');
       startAppAfterAuth();
+      if (data.recoveryCode) showRecoveryCodeModal(data.recoveryCode);
     });
 
     socket.on('auth-failed', (data) => {
@@ -2246,6 +2294,65 @@
       localStorage.removeItem('dspeak_token');
       location.reload();
     }
+
+    let pendingRecoveryCode = '';
+    function showRecoveryCodeModal(code) {
+      pendingRecoveryCode = code;
+      document.getElementById('recovery-code-value').textContent = code;
+      document.getElementById('recovery-code-overlay').classList.add('visible');
+    }
+    function closeRecoveryCodeModal() {
+      document.getElementById('recovery-code-overlay').classList.remove('visible');
+      pendingRecoveryCode = '';
+    }
+    async function copyRecoveryCode() {
+      const code = pendingRecoveryCode || document.getElementById('recovery-code-value').textContent;
+      try {
+        await navigator.clipboard.writeText(code);
+        showToast('Código copiado.');
+      } catch (e) {
+        showToast('Copia o código na mão: ' + code);
+      }
+    }
+
+    function showSettingsPasswordMsg(text, ok) {
+      const el = document.getElementById('settings-password-msg');
+      el.style.display = 'block';
+      el.style.color = ok ? '#5ee0a0' : '#ff6b6b';
+      el.textContent = text;
+    }
+
+    function changeAccountPassword() {
+      const currentPassword = document.getElementById('current-password-input').value;
+      const newPassword = document.getElementById('new-password-input').value;
+      if (!currentPassword) { showSettingsPasswordMsg('Digite a senha atual.', false); return; }
+      if (!newPassword || newPassword.length < 6) { showSettingsPasswordMsg('A nova senha precisa ter pelo menos 6 caracteres.', false); return; }
+      socket.emit('change-password', { currentPassword, newPassword });
+    }
+
+    function generateRecoveryCode() {
+      const password = document.getElementById('current-password-input').value;
+      if (!password) { showSettingsPasswordMsg('Digite a senha atual pra gerar um código novo.', false); return; }
+      socket.emit('new-recovery-code', { password });
+    }
+
+    socket.on('password-changed', (data) => {
+      if (data && data.ok && data.token) {
+        sessionToken = data.token;
+        localStorage.setItem('dspeak_token', sessionToken);
+        document.getElementById('current-password-input').value = '';
+        document.getElementById('new-password-input').value = '';
+      }
+      showSettingsPasswordMsg((data && data.message) || (data && data.ok ? 'Senha atualizada.' : 'Não deu pra trocar.'), !!(data && data.ok));
+    });
+
+    socket.on('recovery-code', (data) => {
+      if (data && data.code) showRecoveryCodeModal(data.code);
+    });
+
+    socket.on('recovery-code-failed', (data) => {
+      showSettingsPasswordMsg((data && data.message) || 'Não deu pra gerar o código.', false);
+    });
 
     function updateUserProfileUI() {
       document.getElementById('user-display-name').textContent = username;
