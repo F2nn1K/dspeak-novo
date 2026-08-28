@@ -6,6 +6,7 @@ const fs = require('fs');
 const multer = require('multer');
 const crypto = require('crypto');
 const db = require('./db');
+const mail = require('./mail');
 
 const app = express();
 const server = http.createServer(app);
@@ -822,23 +823,51 @@ function persistAccount(key, acc) {
       recoveryHash: acc.recoveryHash || null,
       avatarUrl: acc.avatarUrl || null,
       sessionToken: acc.sessionToken || null,
-      createdAt: acc.createdAt || Date.now()
+      createdAt: acc.createdAt || Date.now(),
+      email: acc.email || null,
+      passwordResetHash: acc.passwordResetHash || null,
+      passwordResetExpires: acc.passwordResetExpires || null
     }).catch((e) => console.error('[DSpeak] Não consegui gravar a conta no Postgres:', e.message));
   }
   saveAccounts();
   return Promise.resolve();
 }
 
-function newRecoveryCode() {
-  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let raw = '';
-  for (let i = 0; i < 12; i++) raw += alphabet[crypto.randomInt(alphabet.length)];
-  return `${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(8, 12)}`;
+function normalizeEmail(email) {
+  return String(email || '').trim().toLowerCase();
 }
 
-function normalizeRecoveryCode(code) {
-  return String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+function isValidEmail(email) {
+  const s = normalizeEmail(email);
+  if (s.length < 5 || s.length > 120) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
 }
+
+function findAccountKeyByEmail(email) {
+  const e = normalizeEmail(email);
+  if (!e) return null;
+  return Object.keys(accounts).find((k) => accounts[k] && accounts[k].email === e) || null;
+}
+
+function hashResetToken(token) {
+  return crypto.createHash('sha256').update(String(token)).digest('hex');
+}
+
+function publicAppUrl() {
+  const raw = process.env.APP_PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || 'https://dspeak-novo.onrender.com';
+  return String(raw).replace(/\/$/, '');
+}
+
+function authPayload(acc) {
+  return {
+    username: acc.username,
+    avatarUrl: acc.avatarUrl || '',
+    token: acc.sessionToken,
+    email: acc.email || ''
+  };
+}
+
+const lastResetRequestAt = new Map();
 
 function attachUserSession(socket, username, avatarUrl) {
   socket.username = username;
@@ -883,7 +912,7 @@ io.on('connection', (socket) => {
         if (incomingAvatar) acc.avatarUrl = incomingAvatar;
         await persistAccount(key, acc);
         attachUserSession(socket, acc.username, acc.avatarUrl);
-        socket.emit('auth-ok', { username: acc.username, avatarUrl: acc.avatarUrl || '', token: acc.sessionToken });
+        socket.emit('auth-ok', authPayload(acc));
         return;
       }
 
@@ -892,8 +921,18 @@ io.on('connection', (socket) => {
           socket.emit('auth-failed', { message: 'A senha precisa ter pelo menos 6 caracteres.' });
           return;
         }
+        const email = normalizeEmail(data && data.email);
+        if (!isValidEmail(email)) {
+          socket.emit('auth-failed', { message: 'Digite um e-mail válido. É nele que a gente manda o link se você esquecer a senha.' });
+          return;
+        }
         if (acc) {
           socket.emit('auth-failed', { message: 'Esse apelido já tem conta. Entra com a senha.' });
+          return;
+        }
+        const emailOwner = findAccountKeyByEmail(email);
+        if (emailOwner) {
+          socket.emit('auth-failed', { message: 'Esse e-mail já está em outra conta. Entra com o apelido dela, ou usa outro e-mail.' });
           return;
         }
         acc = {
@@ -902,39 +941,14 @@ io.on('connection', (socket) => {
           recoveryHash: '',
           avatarUrl: incomingAvatar,
           sessionToken: newSessionToken(),
-          createdAt: Date.now()
+          createdAt: Date.now(),
+          email,
+          passwordResetHash: '',
+          passwordResetExpires: 0
         };
-        const recoveryCode = newRecoveryCode();
-        acc.recoveryHash = hashServerPassword(normalizeRecoveryCode(recoveryCode));
         await persistAccount(key, acc);
         attachUserSession(socket, username, acc.avatarUrl);
-        socket.emit('auth-ok', { username, avatarUrl: acc.avatarUrl || '', token: acc.sessionToken, recoveryCode });
-        return;
-      }
-
-      if (mode === 'recover') {
-        const recoveryCode = data && data.recoveryCode;
-        if (!acc) {
-          socket.emit('auth-failed', { message: 'Não achei uma conta com esse apelido. Cria uma em "Criar conta".' });
-          return;
-        }
-        if (!acc.recoveryHash) {
-          socket.emit('auth-failed', { message: 'Essa conta ainda não tem código de recuperação. Entra com a senha e gera um em Configurações.' });
-          return;
-        }
-        if (!verifyServerPassword(normalizeRecoveryCode(recoveryCode), acc.recoveryHash)) {
-          socket.emit('auth-failed', { message: 'Código de recuperação incorreto.' });
-          return;
-        }
-        if (!isValidPassword(password)) {
-          socket.emit('auth-failed', { message: 'A nova senha precisa ter pelo menos 6 caracteres.' });
-          return;
-        }
-        acc.passwordHash = hashServerPassword(password);
-        acc.sessionToken = newSessionToken();
-        await persistAccount(key, acc);
-        attachUserSession(socket, acc.username, acc.avatarUrl);
-        socket.emit('auth-ok', { username: acc.username, avatarUrl: acc.avatarUrl || '', token: acc.sessionToken });
+        socket.emit('auth-ok', authPayload(acc));
         return;
       }
 
@@ -951,7 +965,7 @@ io.on('connection', (socket) => {
         if (incomingAvatar) acc.avatarUrl = incomingAvatar;
         await persistAccount(key, acc);
         attachUserSession(socket, acc.username, acc.avatarUrl);
-        socket.emit('auth-ok', { username: acc.username, avatarUrl: acc.avatarUrl || '', token: acc.sessionToken });
+        socket.emit('auth-ok', authPayload(acc));
         return;
       }
 
@@ -994,6 +1008,8 @@ io.on('connection', (socket) => {
       }
       acc.passwordHash = hashServerPassword(newPassword);
       acc.sessionToken = newSessionToken();
+      acc.passwordResetHash = '';
+      acc.passwordResetExpires = 0;
       await persistAccount(socket.usernameKey, acc);
       socket.emit('password-changed', { ok: true, token: acc.sessionToken, message: 'Senha atualizada.' });
     } catch (e) {
@@ -1002,28 +1018,143 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('new-recovery-code', async (data) => {
+  socket.on('set-account-email', async (data) => {
     try {
       if (!socket.usernameKey) {
-        socket.emit('recovery-code-failed', { message: 'Entra na conta primeiro.' });
+        socket.emit('email-updated', { ok: false, message: 'Entra na conta primeiro.' });
         return;
       }
       const acc = accounts[socket.usernameKey];
       if (!acc) {
-        socket.emit('recovery-code-failed', { message: 'Conta não encontrada.' });
+        socket.emit('email-updated', { ok: false, message: 'Conta não encontrada.' });
         return;
       }
       if (!acc.passwordHash || !verifyServerPassword(data && data.password, acc.passwordHash)) {
-        socket.emit('recovery-code-failed', { message: 'Senha atual incorreta.' });
+        socket.emit('email-updated', { ok: false, message: 'Senha atual incorreta.' });
         return;
       }
-      const recoveryCode = newRecoveryCode();
-      acc.recoveryHash = hashServerPassword(normalizeRecoveryCode(recoveryCode));
+      const email = normalizeEmail(data && data.email);
+      if (!isValidEmail(email)) {
+        socket.emit('email-updated', { ok: false, message: 'Digite um e-mail válido.' });
+        return;
+      }
+      const emailOwner = findAccountKeyByEmail(email);
+      if (emailOwner && emailOwner !== socket.usernameKey) {
+        socket.emit('email-updated', { ok: false, message: 'Esse e-mail já está em outra conta.' });
+        return;
+      }
+      acc.email = email;
       await persistAccount(socket.usernameKey, acc);
-      socket.emit('recovery-code', { code: recoveryCode });
+      socket.emit('email-updated', { ok: true, email, message: 'E-mail salvo. Se você esquecer a senha, o link vai pra esse endereço.' });
     } catch (e) {
-      console.error('[DSpeak] Falha ao gerar código de recuperação:', e);
-      socket.emit('recovery-code-failed', { message: 'Não deu pra gerar o código agora.' });
+      console.error('[DSpeak] Falha ao salvar e-mail:', e);
+      socket.emit('email-updated', { ok: false, message: 'Não deu pra salvar o e-mail agora.' });
+    }
+  });
+
+  socket.on('request-password-reset', async (data) => {
+    const genericOk = 'Se esse e-mail tiver conta, enviamos o link. Confere a caixa de entrada e o spam.';
+    try {
+      if (!mail.isConfigured()) {
+        socket.emit('password-reset-sent', {
+          ok: false,
+          message: 'O servidor ainda não envia e-mail. Falta configurar SMTP ou Resend no Render.'
+        });
+        return;
+      }
+      const email = normalizeEmail(data && data.email);
+      if (!isValidEmail(email)) {
+        socket.emit('password-reset-sent', { ok: false, message: 'Digite um e-mail válido.' });
+        return;
+      }
+      const now = Date.now();
+      const last = lastResetRequestAt.get(email) || 0;
+      if (now - last < 60 * 1000) {
+        socket.emit('password-reset-sent', { ok: true, message: genericOk });
+        return;
+      }
+      lastResetRequestAt.set(email, now);
+
+      const key = findAccountKeyByEmail(email);
+      if (!key || !accounts[key]) {
+        socket.emit('password-reset-sent', { ok: true, message: genericOk });
+        return;
+      }
+      const acc = accounts[key];
+      const rawToken = crypto.randomBytes(32).toString('hex');
+      acc.passwordResetHash = hashResetToken(rawToken);
+      acc.passwordResetExpires = now + 60 * 60 * 1000;
+      await persistAccount(key, acc);
+
+      const link = `${publicAppUrl()}/?reset=${rawToken}`;
+      const text = [
+        `Olá${acc.username ? `, ${acc.username}` : ''},`,
+        '',
+        'Você pediu pra redefinir a senha da sua conta no DSpeak.',
+        'Abre este link (vale por 1 hora):',
+        link,
+        '',
+        'Se não foi você, ignora este e-mail.'
+      ].join('\n');
+      await mail.sendMail({
+        to: email,
+        subject: 'Redefinir senha do DSpeak',
+        text,
+        html: `<p>Olá${acc.username ? `, <strong>${acc.username}</strong>` : ''},</p>
+<p>Você pediu pra redefinir a senha da sua conta no DSpeak.</p>
+<p><a href="${link}">Clique aqui para escolher uma senha nova</a> — o link vale por 1 hora.</p>
+<p>Se não foi você, ignora este e-mail.</p>`
+      });
+      socket.emit('password-reset-sent', { ok: true, message: genericOk });
+    } catch (e) {
+      console.error('[DSpeak] Falha ao enviar e-mail de recuperação:', e);
+      if (e && e.code === 'MAIL_NOT_CONFIGURED') {
+        socket.emit('password-reset-sent', {
+          ok: false,
+          message: 'O servidor ainda não envia e-mail. Falta configurar SMTP ou Resend no Render.'
+        });
+        return;
+      }
+      socket.emit('password-reset-sent', { ok: false, message: 'Não deu pra enviar o e-mail agora. Tenta de novo em instantes.' });
+    }
+  });
+
+  socket.on('reset-password', async (data) => {
+    try {
+      const rawToken = String((data && data.token) || '').trim();
+      const newPassword = data && data.newPassword;
+      if (!rawToken || rawToken.length < 16) {
+        socket.emit('password-reset-done', { ok: false, message: 'Link inválido. Pede um e-mail novo em "Esqueci a senha".' });
+        return;
+      }
+      if (!isValidPassword(newPassword)) {
+        socket.emit('password-reset-done', { ok: false, message: 'A nova senha precisa ter pelo menos 6 caracteres.' });
+        return;
+      }
+      const tokenHash = hashResetToken(rawToken);
+      const now = Date.now();
+      const key = Object.keys(accounts).find((k) => {
+        const a = accounts[k];
+        return a && a.passwordResetHash === tokenHash && Number(a.passwordResetExpires) > now;
+      });
+      if (!key) {
+        socket.emit('password-reset-done', { ok: false, message: 'Esse link expirou ou já foi usado. Pede um e-mail novo em "Esqueci a senha".' });
+        return;
+      }
+      const acc = accounts[key];
+      acc.passwordHash = hashServerPassword(newPassword);
+      acc.sessionToken = newSessionToken();
+      acc.passwordResetHash = '';
+      acc.passwordResetExpires = 0;
+      await persistAccount(key, acc);
+      socket.emit('password-reset-done', {
+        ok: true,
+        username: acc.username,
+        message: 'Senha atualizada. Entra com o apelido e a senha nova.'
+      });
+    } catch (e) {
+      console.error('[DSpeak] Falha ao redefinir senha:', e);
+      socket.emit('password-reset-done', { ok: false, message: 'Não deu pra salvar a senha nova agora.' });
     }
   });
 
@@ -1853,7 +1984,10 @@ async function boot() {
           recoveryHash: row.recovery_hash || '',
           avatarUrl: row.avatar_url || '',
           sessionToken: row.session_token || '',
-          createdAt: Number(row.created_at) || Date.now()
+          createdAt: Number(row.created_at) || Date.now(),
+          email: row.email || '',
+          passwordResetHash: row.password_reset_hash || '',
+          passwordResetExpires: Number(row.password_reset_expires) || 0
         };
       });
     } else {
@@ -1888,7 +2022,12 @@ async function boot() {
     persistenceReady = true;
   }
 
-  server.listen(PORT, () => console.log(`Servidor DSpeak rodando na porta ${PORT}`));
+  server.listen(PORT, () => {
+    console.log(`Servidor DSpeak rodando na porta ${PORT}`);
+    if (!mail.isConfigured()) {
+      console.warn('[DSpeak] Recuperação de senha por e-mail ainda não envia nada. No Render, configure RESEND_API_KEY + MAIL_FROM, ou SMTP_HOST / SMTP_USER / SMTP_PASS.');
+    }
+  });
 }
 
 boot();

@@ -48,6 +48,11 @@ async function init() {
     );
     CREATE INDEX IF NOT EXISTS users_session_token ON users (session_token);
     ALTER TABLE users ADD COLUMN IF NOT EXISTS recovery_hash TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_hash TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_expires BIGINT;
+    CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique
+      ON users (email) WHERE email IS NOT NULL AND email <> '';
     CREATE TABLE IF NOT EXISTS chat_files (
       id TEXT PRIMARY KEY,
       filename TEXT NOT NULL,
@@ -109,7 +114,7 @@ async function loadSnapshot() {
     getKv('roles'),
     getKv('messages'),
     getKv('dms'),
-    query('SELECT username_key, username, password_hash, recovery_hash, avatar_url, session_token, created_at FROM users')
+    query('SELECT username_key, username, password_hash, recovery_hash, avatar_url, session_token, created_at, email, password_reset_hash, password_reset_expires FROM users')
   ]);
   return {
     channels: Array.isArray(channels) ? channels : null,
@@ -124,14 +129,17 @@ async function loadSnapshot() {
 async function upsertUser(user) {
   if (!enabled) return;
   await query(
-    `INSERT INTO users (username_key, username, password_hash, recovery_hash, avatar_url, session_token, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO users (username_key, username, password_hash, recovery_hash, avatar_url, session_token, created_at, email, password_reset_hash, password_reset_expires)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      ON CONFLICT (username_key) DO UPDATE SET
        username = EXCLUDED.username,
        password_hash = EXCLUDED.password_hash,
        recovery_hash = EXCLUDED.recovery_hash,
        avatar_url = EXCLUDED.avatar_url,
-       session_token = EXCLUDED.session_token`,
+       session_token = EXCLUDED.session_token,
+       email = EXCLUDED.email,
+       password_reset_hash = EXCLUDED.password_reset_hash,
+       password_reset_expires = EXCLUDED.password_reset_expires`,
     [
       user.usernameKey,
       user.username,
@@ -139,7 +147,10 @@ async function upsertUser(user) {
       user.recoveryHash || null,
       user.avatarUrl || null,
       user.sessionToken || null,
-      user.createdAt || Date.now()
+      user.createdAt || Date.now(),
+      user.email || null,
+      user.passwordResetHash || null,
+      user.passwordResetExpires || null
     ]
   );
 }
