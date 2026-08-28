@@ -691,6 +691,55 @@
     .attachment-preview-remove:hover { color: #ff3333; }
     .attachment-upload-progress { font-size: 11px; color: #ff5500; }
 
+    /* ---------- Ações da mensagem (editar / apagar / reagir), estilo Discord:
+       aparecem só ao passar o mouse em cima da mensagem ---------- */
+    .chat-message-item { position: relative; border-radius: 8px; }
+    .chat-message-item:hover { background: rgba(255,255,255,0.03); }
+    .chat-msg-actions { display: none; position: absolute; top: -12px; right: 8px; gap: 2px;
+      background: #181b24; border: 1px solid rgba(255,85,0,0.35); border-radius: 8px; padding: 2px; z-index: 5;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.6); }
+    .chat-message-item:hover .chat-msg-actions { display: flex; }
+    .chat-msg-action-btn { background: transparent; border: none; cursor: pointer; font-size: 14px;
+      padding: 3px 6px; border-radius: 6px; line-height: 1; }
+    .chat-msg-action-btn:hover { background: rgba(255,85,0,0.25); }
+    .chat-msg-edited { font-size: 10px; color: #8a8f9d; margin-left: 6px; font-style: italic; }
+    .chat-msg-text.mention-me { background: rgba(255,170,0,0.14); border-left: 3px solid #ffaa00;
+      padding: 2px 6px; border-radius: 4px; }
+
+    /* Reações embaixo da mensagem */
+    .chat-msg-reactions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+    .reaction-chip { display: inline-flex; align-items: center; gap: 5px; background: #181b24;
+      border: 1px solid rgba(255,255,255,0.12); border-radius: 10px; padding: 2px 8px; font-size: 13px;
+      cursor: pointer; user-select: none; }
+    .reaction-chip.mine { border-color: #ff5500; background: rgba(255,85,0,0.15); }
+    .reaction-chip:hover { border-color: rgba(255,85,0,0.6); }
+    .reaction-chip .reaction-count { font-size: 11px; color: #b5bac1; font-weight: 700; }
+
+    /* Paletinha rápida de emojis pra reagir */
+    .reaction-picker-popover { display: none; position: fixed; z-index: 3000; background: #13151b;
+      border: 1px solid rgba(255,85,0,0.4); border-radius: 12px; padding: 6px; gap: 2px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.8); }
+    .reaction-picker-popover.open { display: flex; }
+    .reaction-picker-popover button { background: transparent; border: none; font-size: 20px; cursor: pointer;
+      padding: 4px 6px; border-radius: 8px; }
+    .reaction-picker-popover button:hover { background: rgba(255,85,0,0.25); transform: scale(1.15); }
+
+    /* Campo de edição inline da mensagem */
+    .chat-msg-edit-input { width: 100%; box-sizing: border-box; background: #181b24; color: #f2f3f5;
+      border: 1px solid rgba(255,85,0,0.5); border-radius: 8px; padding: 6px 8px; font-size: 14px; margin-top: 2px; }
+    .chat-msg-edit-hint { font-size: 10px; color: #8a8f9d; margin-top: 3px; }
+
+    /* "Fulano está digitando..." */
+    .typing-indicator { display: none; padding: 2px 18px 4px; font-size: 12px; color: #8a8f9d; font-style: italic; min-height: 16px; }
+    .typing-indicator.visible { display: block; }
+
+    /* Bolinha de status (Disponível/Ausente/Ocupado) do lado do nome nas listas */
+    .presence-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; display: inline-block;
+      box-shadow: 0 0 5px currentColor; }
+    .presence-dot.online { background: #00ffcc; color: #00ffcc; }
+    .presence-dot.idle { background: #ffaa00; color: #ffaa00; }
+    .presence-dot.dnd { background: #ff3333; color: #ff3333; }
+
     .emoji-gif-popover { display: none; position: fixed; width: 320px; height: 380px; background: #13151b; border: 1px solid rgba(255,85,0,0.35); border-radius: 12px; box-shadow: 0 12px 30px rgba(0,0,0,0.85); z-index: 2000; flex-direction: column; overflow: hidden; }
     .egp-tabs { display: flex; border-bottom: 1px solid rgba(255,255,255,0.08); flex-shrink: 0; }
     .egp-tab { flex: 1; background: transparent; border: none; color: #8a8f9d; padding: 10px; font-weight: 700; font-size: 12px; cursor: pointer; border-bottom: 2px solid transparent; }
@@ -1283,6 +1332,7 @@
         <button class="modal-close-btn" onclick="closeDmModal()" style="position:static; margin-left:auto;">✕</button>
       </div>
       <div id="dm-messages-list" style="flex:1; overflow-y:auto; overflow-x:hidden; padding: 12px 16px; display:flex; flex-direction:column; gap:12px; justify-content:flex-end;"></div>
+      <div class="typing-indicator" id="dm-typing-indicator"></div>
       <div id="dm-attachment-preview-bar" style="display:none;"></div>
       <form class="form-container" onsubmit="event.preventDefault(); sendDmMessage();">
         <div class="input-wrapper">
@@ -1399,6 +1449,7 @@
       <div id="right-chat-sidebar">
         <div id="chat-messages-list"></div>
 
+        <div class="typing-indicator" id="typing-indicator"></div>
         <div id="attachment-preview-bar" style="display:none;"></div>
 
         <form class="form-container" onsubmit="sendTextMessage(event)">
@@ -1431,6 +1482,9 @@
       </div>
     </div>
   </div>
+
+  <!-- Paletinha rápida pra reagir a uma mensagem com emoji -->
+  <div class="reaction-picker-popover" id="reaction-picker" onclick="event.stopPropagation()"></div>
 
   <div id="music-engine" class="idle" aria-hidden="true">
     <div id="yt-music-host" class="is-idle"><div id="yt-music-player"></div></div>
@@ -1479,6 +1533,7 @@
       // Se reconectamos, o servidor esqueceu quem éramos (novo socket.id) — precisa
       // se re-registrar e voltar pra sala de voz em que estávamos.
       socket.emit('register-user', { username, avatarUrl: userAvatarUrl });
+      sendMyStatus();
 
       if (connectedVoiceChannel) {
         socket.emit('join-voice-room', { channelId: connectedVoiceChannel, username, avatarUrl: userAvatarUrl, type: 'voice', password: connectedVoiceChannelPassword });
@@ -2039,6 +2094,8 @@
       showWelcomeIntro();
       updateUserProfileUI();
       socket.emit('register-user', { username, avatarUrl: userAvatarUrl });
+      sendMyStatus(); // relembra o status escolhido (Disponível/Ausente/Ocupado) e avisa todo mundo
+      requestNotifyPermission(); // permissão pra notificação nativa de DM/menção
       fetchAudioDevices();
       startPingLoop();
       setupStageDockAutoHide();
@@ -2631,6 +2688,11 @@
     function setUserStatus(statusKey, colorHex) {
       document.getElementById('footer-status-dot').style.background = colorHex;
       document.getElementById('status-selector-popover').style.display = 'none';
+      // Agora o status é de verdade: salvo pra próxima sessão e visível pros
+      // outros (bolinha colorida do lado do nome nas listas).
+      myStatus = statusKey;
+      localStorage.setItem('dspeak_status', statusKey);
+      socket.emit('set-status', { status: statusKey });
     }
 
     function openModal(id) { document.getElementById(id).style.display = 'flex'; }
@@ -2952,7 +3014,7 @@
             return;
           }
           activeChannel = ch.id;
-          if (!isVoice) unreadCounts[ch.id] = 0;
+          if (!isVoice) { unreadCounts[ch.id] = 0; updateTitleBadge(); }
           document.getElementById('chat-header-title').textContent = `${isVoice ? '🔊' : '#'} ${ch.name}`;
           if (isVoice) connectVoice(ch);
           socket.emit('join-room', ch.id);
@@ -3027,6 +3089,7 @@
               sub.innerHTML = `
                 <div class="voice-user-left">
                   <div class="voice-user-avatar" style="${avatarStyle}">${initialText}</div>
+                  ${presenceDotHtml(u.name)}
                   <span class="voice-user-name">${u.name}</span>
                   ${roleBadgeHtml(u.role)}
                   ${hasUnreadDm ? `<button class="dm-unread-badge" title="Mensagem privada não lida — clica pra abrir" onclick="event.stopPropagation(); openDmWith('${dmSafeName}', ${u.avatarUrl ? `'${u.avatarUrl}'` : 'null'})">💬</button>` : ''}
@@ -4041,6 +4104,7 @@
         card.innerHTML = `
           <div class="card-avatar" style="${avatarStyle}">${initialText}</div>
           <div class="card-name-row">
+            ${presenceDotHtml(u.name)}
             <div class="card-name-pill">${u.name}</div>
             ${voiceStatusIconsHtml(u, isSelf)}
             ${roleBadgeHtml(u.role)}
@@ -6443,7 +6507,7 @@
       chatContext = 'dm';
       currentDmTarget = targetUsername;
       const key = targetUsername.toLowerCase();
-      if (unreadDms[key]) { delete unreadDms[key]; renderChannels(); }
+      if (unreadDms[key]) { delete unreadDms[key]; renderChannels(); updateTitleBadge(); }
 
       document.getElementById('dm-modal-username').textContent = targetUsername;
       const avatarEl = document.getElementById('dm-modal-avatar');
@@ -6542,6 +6606,8 @@
         unreadDms[key] = true;
         showToast(`💬 Nova mensagem de ${data.from}`);
         playSound('message');
+        desktopNotify(`💬 ${data.from}`, data.message || 'Enviou um anexo');
+        updateTitleBadge();
         renderChannels(); // atualiza a lista de voz pra mostrar a bolinha na hora
       }
     });
@@ -6627,6 +6693,41 @@
       `;
     }
 
+    // A mensagem menciona a MIM? ("@meunome" no meio do texto, sem diferenciar
+    // maiúsculas) — usado pra destacar e notificar.
+    function messageMentionsMe(text) {
+      if (!text || !username) return false;
+      return text.toLowerCase().includes('@' + username.toLowerCase());
+    }
+
+    function reactionsHtml(data) {
+      const reactions = data.reactions || {};
+      const emojis = Object.keys(reactions);
+      if (!emojis.length || !data.id) return '';
+      const myKey = username.toLowerCase();
+      const chips = emojis.map(emoji => {
+        const users = reactions[emoji] || [];
+        if (!users.length) return '';
+        const mine = users.includes(myKey);
+        return `<span class="reaction-chip${mine ? ' mine' : ''}" title="${escapeHtml(users.join(', '))}"
+          onclick="reactToMessage('${data.id}', '${escapeHtml(emoji)}')">${escapeHtml(emoji)}<span class="reaction-count">${users.length}</span></span>`;
+      }).join('');
+      return `<div class="chat-msg-reactions">${chips}</div>`;
+    }
+
+    function messageActionsHtml(data) {
+      // Mensagens antigas (sem id, de antes do recurso) não têm ações.
+      if (!data.id) return '';
+      const isMine = data.user === username;
+      const canDelete = isMine || myRole === 'owner' || myRole === 'moderator';
+      return `
+        <div class="chat-msg-actions">
+          <button class="chat-msg-action-btn" title="Reagir" onclick="openReactionPicker(event, '${data.id}')">😊</button>
+          ${isMine && data.message ? `<button class="chat-msg-action-btn" title="Editar" onclick="startEditMessage('${data.id}')">✏️</button>` : ''}
+          ${canDelete ? `<button class="chat-msg-action-btn" title="Apagar" onclick="deleteMessage('${data.id}')">🗑️</button>` : ''}
+        </div>`;
+    }
+
     function appendMessageToDOM(data) {
       const chatList = document.getElementById('chat-messages-list');
 
@@ -6641,11 +6742,13 @@
 
       const div = document.createElement('div');
       div.className = 'chat-message-item';
+      if (data.id) div.dataset.msgId = data.id;
 
       const avatarStyle = data.avatarUrl 
         ? `background-image: url(${data.avatarUrl});` 
         : `background: ${getUserAvatarGradient(data.user)};`;
       const initialText = data.avatarUrl ? '' : data.user.charAt(0).toUpperCase();
+      const mentioned = data.user !== username && messageMentionsMe(data.message);
 
       // TUDO que veio de outro cliente (nome, texto, hora) passa por escapeHtml antes
       // de entrar no innerHTML — sem isso, uma mensagem com <img onerror=...> rodava
@@ -6656,11 +6759,13 @@
           <div class="chat-msg-header">
             <span class="chat-msg-author">${escapeHtml(data.user)}</span>
             ${roleBadgeHtml(data.role)}
-            <span class="chat-msg-time">${escapeHtml(data.time || 'Agora')}</span>
+            <span class="chat-msg-time">${escapeHtml(data.time || 'Agora')}${data.edited ? '<span class="chat-msg-edited">(editada)</span>' : ''}</span>
           </div>
-          ${data.message ? `<div class="chat-msg-text">${escapeHtml(data.message)}</div>` : ''}
+          ${data.message ? `<div class="chat-msg-text${mentioned ? ' mention-me' : ''}">${escapeHtml(data.message)}</div>` : ''}
           ${attachmentHtml(data.attachment)}
+          ${reactionsHtml(data)}
         </div>
+        ${messageActionsHtml(data)}
       `;
       chatList.appendChild(div);
       chatList.scrollTop = chatList.scrollHeight;
@@ -6783,7 +6888,228 @@
         unreadCounts[data.room] = (unreadCounts[data.room] || 0) + 1;
         renderChannels();
       }
+
+      // Alguém me mencionou (@meunome)? Som + toast + notificação do sistema se a
+      // janela não estiver em foco.
+      if (data.user !== username && messageMentionsMe(data.message)) {
+        playSound('message');
+        showToast(`📣 ${data.user} mencionou você no chat`);
+        desktopNotify(`${data.user} mencionou você`, data.message);
+      }
+      updateTitleBadge();
     });
+
+    // ---------- Editar / apagar / reagir ----------
+    // Estratégia simples e à prova de bugs: atualiza o cache local e, se a mudança
+    // for do canal que está na tela, redesenha a lista inteira daquele canal.
+    function refreshRoomIfActive(room) {
+      if (room === activeChannel) renderChannelMessagesFromCache(room);
+    }
+
+    socket.on('message-edited', (data) => {
+      const list = channelMessages[data.room] || [];
+      const msg = list.find(m => m.id === data.messageId);
+      if (msg) { msg.message = data.newText; msg.edited = true; }
+      refreshRoomIfActive(data.room);
+    });
+
+    socket.on('message-deleted', (data) => {
+      if (channelMessages[data.room]) {
+        channelMessages[data.room] = channelMessages[data.room].filter(m => m.id !== data.messageId);
+      }
+      refreshRoomIfActive(data.room);
+    });
+
+    socket.on('message-reacted', (data) => {
+      const list = channelMessages[data.room] || [];
+      const msg = list.find(m => m.id === data.messageId);
+      if (msg) msg.reactions = data.reactions;
+      refreshRoomIfActive(data.room);
+    });
+
+    function startEditMessage(msgId) {
+      const item = document.querySelector(`.chat-message-item[data-msg-id="${msgId}"]`);
+      if (!item) return;
+      const textEl = item.querySelector('.chat-msg-text');
+      if (!textEl) return;
+      const original = (channelMessages[activeChannel] || []).find(m => m.id === msgId);
+      if (!original) return;
+
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'chat-msg-edit-input';
+      input.value = original.message;
+      input.maxLength = 2000;
+      const hint = document.createElement('div');
+      hint.className = 'chat-msg-edit-hint';
+      hint.textContent = 'Enter pra salvar • Esc pra cancelar';
+
+      textEl.replaceWith(input);
+      input.after(hint);
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+
+      const cancel = () => refreshRoomIfActive(activeChannel);
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const newText = input.value.trim();
+          if (newText && newText !== original.message) {
+            socket.emit('edit-message', { room: activeChannel, messageId: msgId, newText });
+          } else {
+            cancel();
+          }
+        } else if (e.key === 'Escape') {
+          cancel();
+        }
+      });
+      input.addEventListener('blur', cancel);
+    }
+
+    function deleteMessage(msgId) {
+      if (!confirm('Apagar essa mensagem pra todo mundo?')) return;
+      socket.emit('delete-message', { room: activeChannel, messageId: msgId });
+    }
+
+    const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🔥', '👀', '🎉'];
+    let reactionPickerMsgId = null;
+
+    function openReactionPicker(e, msgId) {
+      e.stopPropagation();
+      const picker = document.getElementById('reaction-picker');
+      reactionPickerMsgId = msgId;
+      picker.innerHTML = QUICK_REACTIONS.map(em =>
+        `<button onclick="reactToMessage('${msgId}', '${em}'); closeReactionPicker()">${em}</button>`
+      ).join('');
+      const rect = e.currentTarget.getBoundingClientRect();
+      picker.classList.add('open');
+      const pw = picker.offsetWidth || 280;
+      let left = rect.left - pw + rect.width;
+      if (left < 8) left = 8;
+      let top = rect.top - 48;
+      if (top < 8) top = rect.bottom + 6;
+      picker.style.left = `${left}px`;
+      picker.style.top = `${top}px`;
+    }
+
+    function closeReactionPicker() {
+      document.getElementById('reaction-picker').classList.remove('open');
+      reactionPickerMsgId = null;
+    }
+    document.addEventListener('click', closeReactionPicker);
+
+    function reactToMessage(msgId, emoji) {
+      socket.emit('react-message', { room: activeChannel, messageId: msgId, emoji });
+    }
+
+    // ---------- "Fulano está digitando..." ----------
+    // Manda no máximo 1 aviso a cada 2s enquanto a pessoa digita; quem recebe mostra
+    // o texto e apaga sozinho se nenhum aviso novo chegar em 3s.
+    let lastTypingSentAt = 0;
+    document.getElementById('input').addEventListener('input', () => {
+      if (!activeChannel) return;
+      const now = Date.now();
+      if (now - lastTypingSentAt < 2000) return;
+      lastTypingSentAt = now;
+      socket.emit('chat-typing', { room: activeChannel });
+    });
+
+    let lastDmTypingSentAt = 0;
+    document.getElementById('dm-input').addEventListener('input', () => {
+      if (!currentDmTarget) return;
+      const now = Date.now();
+      if (now - lastDmTypingSentAt < 2000) return;
+      lastDmTypingSentAt = now;
+      socket.emit('dm-typing', { toUsername: currentDmTarget });
+    });
+
+    const typingUsersByRoom = {}; // room -> { nome: timestamp de expiração }
+
+    function renderTypingIndicator() {
+      const el = document.getElementById('typing-indicator');
+      const now = Date.now();
+      const entry = typingUsersByRoom[activeChannel] || {};
+      const names = Object.keys(entry).filter(n => entry[n] > now && n !== username);
+      if (!names.length) { el.classList.remove('visible'); el.textContent = ''; return; }
+      el.textContent = names.length === 1
+        ? `${names[0]} está digitando...`
+        : `${names.slice(0, 3).join(', ')}${names.length > 3 ? ' e mais gente' : ''} estão digitando...`;
+      el.classList.add('visible');
+    }
+    setInterval(renderTypingIndicator, 1000);
+
+    socket.on('chat-typing', (data) => {
+      if (!typingUsersByRoom[data.room]) typingUsersByRoom[data.room] = {};
+      typingUsersByRoom[data.room][data.user] = Date.now() + 3000;
+      renderTypingIndicator();
+    });
+
+    let dmTypingTimeout = null;
+    socket.on('dm-typing', (data) => {
+      if (!currentDmTarget || currentDmTarget.toLowerCase() !== String(data.from || '').toLowerCase()) return;
+      const el = document.getElementById('dm-typing-indicator');
+      el.textContent = `${data.from} está digitando...`;
+      el.classList.add('visible');
+      clearTimeout(dmTypingTimeout);
+      dmTypingTimeout = setTimeout(() => { el.classList.remove('visible'); el.textContent = ''; }, 3000);
+    });
+
+    // ---------- Status visível pros outros (bolinha verde/amarela/vermelha) ----------
+    let userStatusesMap = {}; // nome (minúsculas) -> 'online' | 'idle' | 'dnd'
+    const STATUS_COLORS = { online: '#00ffcc', idle: '#ffaa00', dnd: '#ff3333' };
+    let myStatus = localStorage.getItem('dspeak_status') || 'online';
+
+    function presenceDotHtml(name) {
+      const st = userStatusesMap[String(name || '').toLowerCase()] || 'online';
+      const labels = { online: 'Disponível', idle: 'Ausente', dnd: 'Ocupado' };
+      return `<span class="presence-dot ${st}" title="${labels[st]}"></span>`;
+    }
+
+    socket.on('user-statuses', (data) => {
+      userStatusesMap = data || {};
+      renderChannels();
+      renderStageUsers();
+    });
+
+    function sendMyStatus() {
+      socket.emit('set-status', { status: myStatus });
+      const color = STATUS_COLORS[myStatus] || STATUS_COLORS.online;
+      document.getElementById('footer-status-dot').style.background = color;
+    }
+
+    // ---------- Notificações nativas + contador no título ----------
+    // A permissão é pedida uma vez, logo depois do login (que é um clique do
+    // usuário, então o navegador aceita o pedido).
+    function requestNotifyPermission() {
+      try {
+        if ('Notification' in window && Notification.permission === 'default') {
+          Notification.requestPermission();
+        }
+      } catch (e) {}
+    }
+
+    function desktopNotify(title, body) {
+      try {
+        if (!('Notification' in window) || Notification.permission !== 'granted') return;
+        if (document.hasFocus()) return; // janela na frente: o toast/som já resolve
+        const n = new Notification(title, {
+          body: String(body || '').slice(0, 140),
+          icon: MASCOT_ICON_URL,
+          silent: true // o som fica por conta dos efeitos do próprio app
+        });
+        n.onclick = () => { window.focus(); n.close(); };
+        setTimeout(() => n.close(), 8000);
+      } catch (e) {}
+    }
+
+    // "(3) DSpeak" no título da aba/janela enquanto tem coisa não lida.
+    const BASE_TITLE = document.title || 'DSpeak';
+    function updateTitleBadge() {
+      const channelUnread = Object.values(unreadCounts).reduce((a, b) => a + (b || 0), 0);
+      const dmUnread = Object.keys(unreadDms).length;
+      const total = channelUnread + dmUnread;
+      document.title = total > 0 ? `(${total > 9 ? '9+' : total}) ${BASE_TITLE}` : BASE_TITLE;
+    }
   </script>
 </body>
 </html>

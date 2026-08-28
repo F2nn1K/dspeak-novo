@@ -235,6 +235,17 @@ app.post('/upload', (req, res) => {
 const voiceUsers = {};
 const activeRoomStreams = {};
 
+// ---------- Status visível (Disponível / Ausente / Ocupado) ----------
+// Guardado por nome (minúsculas) enquanto o servidor está de pé — não precisa
+// persistir em disco: cada cliente relembra o próprio status do localStorage e
+// reenvia ao conectar.
+const userStatuses = {}; // usernameKey -> 'online' | 'idle' | 'dnd'
+const VALID_STATUSES = ['online', 'idle', 'dnd'];
+
+function broadcastStatuses() {
+  io.emit('user-statuses', userStatuses);
+}
+
 // ---------- Ouvir junto (YouTube / Spotify oficiais) ----------
 // Estado por sala de voz. O áudio NÃO é baixado nem retransmitido pelo servidor —
 // só a fila/play/pause/posição. Cada cliente toca no player oficial (iframe).
@@ -746,6 +757,18 @@ io.on('connection', (socket) => {
     // Manda só os servidores dos quais essa pessoa é membro, cada um já com seus
     // próprios canais — nunca a lista de canais de TODOS os servidores de todo mundo.
     sendMyServers(socket);
+
+    // Retrato atual dos status de todo mundo (bolinha verde/amarela/vermelha).
+    socket.emit('user-statuses', userStatuses);
+  });
+
+  // Status escolhido no seletor do rodapé — replica pra todo mundo na hora.
+  socket.on('set-status', (data) => {
+    if (!socket.usernameKey) return;
+    const status = data && data.status;
+    if (!VALID_STATUSES.includes(status)) return;
+    userStatuses[socket.usernameKey] = status;
+    broadcastStatuses();
   });
 
   // Atualiza apelido/avatar em tempo real pra todo mundo, sem precisar de F5.
@@ -829,6 +852,7 @@ io.on('connection', (socket) => {
     // O remetente é SEMPRE a identidade deste socket — nome/avatar não vêm mais do
     // payload (dava pra falsificar qualquer identidade só editando o objeto enviado).
     const entry = {
+      id: crypto.randomBytes(8).toString('hex'),
       room: data.room,
       message: messageText,
       attachment: data.attachment,
@@ -837,6 +861,7 @@ io.on('connection', (socket) => {
       time: typeof data.time === 'string' ? data.time.slice(0, 20) : undefined,
       date: typeof data.date === 'string' ? data.date.slice(0, 20) : undefined,
       role: socket.role,
+      reactions: {},
       timestamp: Date.now()
     };
     if (!messages[data.room]) messages[data.room] = [];
@@ -844,6 +869,78 @@ io.on('connection', (socket) => {
     pruneChannelMessages(data.room);
     saveMessages();
     io.to(data.room).emit('chat-message', entry);
+  });
+
+  // ---------- Editar / apagar mensagens e reações ----------
+  // Editar: só o próprio autor. Apagar: o autor, ou Owner/Moderador (moderação).
+  // Mensagens antigas (de antes desse recurso) não têm id — essas não dá pra mexer.
+  function findMessageById(room, messageId) {
+    if (!room || !messageId || !messages[room]) return null;
+    return messages[room].find(m => m.id === messageId) || null;
+  }
+
+  socket.on('edit-message', (data) => {
+    if (!socket.username || !data) return;
+    const entry = findMessageById(data.room, data.messageId);
+    if (!entry) return;
+    if (keyOf(entry.user) !== socket.usernameKey) return; // só o autor edita
+    const newText = String(data.newText || '').trim().slice(0, 2000);
+    if (!newText) return; // pra "apagar", usa delete-message
+    entry.message = newText;
+    entry.edited = true;
+    saveMessages();
+    io.to(data.room).emit('message-edited', { room: data.room, messageId: entry.id, newText, edited: true });
+  });
+
+  socket.on('delete-message', (data) => {
+    if (!socket.username || !data) return;
+    const entry = findMessageById(data.room, data.messageId);
+    if (!entry) return;
+    const isAuthor = keyOf(entry.user) === socket.usernameKey;
+    const isMod = socket.role === 'owner' || socket.role === 'moderator';
+    if (!isAuthor && !isMod) return;
+    messages[data.room] = messages[data.room].filter(m => m.id !== entry.id);
+    saveMessages();
+    io.to(data.room).emit('message-deleted', { room: data.room, messageId: entry.id });
+  });
+
+  socket.on('react-message', (data) => {
+    if (!socket.username || !data) return;
+    const entry = findMessageById(data.room, data.messageId);
+    if (!entry) return;
+    const emoji = String(data.emoji || '').slice(0, 8);
+    if (!emoji.trim()) return;
+    if (!entry.reactions) entry.reactions = {};
+    if (!entry.reactions[emoji]) entry.reactions[emoji] = [];
+    const me = socket.usernameKey;
+    const idx = entry.reactions[emoji].indexOf(me);
+    if (idx >= 0) entry.reactions[emoji].splice(idx, 1); // já tinha reagido — tira (toggle)
+    else {
+      // No máximo 12 emojis diferentes por mensagem, pra não virar bagunça infinita.
+      if (entry.reactions[emoji].length === 0 && Object.keys(entry.reactions).length > 12) {
+        delete entry.reactions[emoji];
+        return;
+      }
+      entry.reactions[emoji].push(me);
+    }
+    if (entry.reactions[emoji].length === 0) delete entry.reactions[emoji];
+    saveMessages();
+    io.to(data.room).emit('message-reacted', { room: data.room, messageId: entry.id, reactions: entry.reactions });
+  });
+
+  // ---------- "Fulano está digitando..." ----------
+  // Só repassa o aviso pra sala (ou pro destinatário da DM) — o cliente cuida do
+  // resto (aparecer/sumir sozinho). Nada é salvo.
+  socket.on('chat-typing', (data) => {
+    if (!socket.username || !data || typeof data.room !== 'string') return;
+    socket.to(data.room).emit('chat-typing', { room: data.room, user: socket.username });
+  });
+
+  socket.on('dm-typing', (data) => {
+    if (!socket.username || !data || !data.toUsername) return;
+    findSocketsByUsername(data.toUsername).forEach(s => {
+      s.emit('dm-typing', { from: socket.username });
+    });
   });
 
   // Manda o histórico (até 7 dias) daquele canal só pra quem pediu, quando ele
