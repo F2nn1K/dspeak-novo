@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const multer = require('multer');
 const crypto = require('crypto');
+const db = require('./db');
 
 const app = express();
 const server = http.createServer(app);
@@ -118,8 +119,10 @@ app.get('/turn-credentials', async (req, res) => {
 // dados continuam salvos dentro da própria pasta do projeto, como sempre foi.
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-if (!process.env.DATA_DIR) {
-  console.log('[DSpeak] Nenhuma variável de ambiente DATA_DIR definida — salvando dados dentro da pasta do projeto (some a cada deploy no Render). Veja o comentário acima de "DATA_DIR" no código pra configurar um disco persistente.');
+if (!process.env.DATA_DIR && !process.env.DATABASE_URL) {
+  console.log('[DSpeak] Sem DATABASE_URL e sem DATA_DIR — salvando dados em JSON na pasta do projeto (some a cada deploy no Render). Configure DATABASE_URL no Render apontando pro Supabase.');
+} else if (process.env.DATABASE_URL) {
+  console.log('[DSpeak] DATABASE_URL definida — salas, chat, cargos e contas vão pro Postgres.');
 } else {
   console.log(`[DSpeak] Salvando dados persistentes em: ${DATA_DIR}`);
 }
@@ -141,7 +144,7 @@ function migrateOldDataFileIfNeeded(filename) {
     }
   }
 }
-['channels.json', 'servers.json', 'roles.json', 'messages.json'].forEach(migrateOldDataFileIfNeeded);
+['channels.json', 'servers.json', 'roles.json', 'messages.json', 'dm-messages.json', 'users.json'].forEach(migrateOldDataFileIfNeeded);
 
 // ---------- Gravação em disco assíncrona e agrupada (debounce) ----------
 // Antes, CADA mensagem reescrevia o arquivo inteiro de forma síncrona
@@ -150,6 +153,8 @@ function migrateOldDataFileIfNeeded(filename) {
 // derrubar clientes à toa (o servidor achava que a pessoa tinha caído). Agora as
 // mudanças muito próximas umas das outras viram UMA escrita só, feita de forma
 // assíncrona — o servidor nunca para de responder por causa de disco.
+let persistenceReady = false; // só grava depois do boot (Postgres ou JSON)
+
 const pendingSaves = new Map(); // caminho do arquivo -> timer agendado
 function saveJsonDebounced(filePath, getData, delayMs = 500) {
   if (pendingSaves.has(filePath)) return; // já tem uma gravação agendada pra esse arquivo
@@ -176,8 +181,13 @@ function flushAllSavesSync() {
     }
   });
 }
-process.on('SIGTERM', () => { flushAllSavesSync(); process.exit(0); });
-process.on('SIGINT', () => { flushAllSavesSync(); process.exit(0); });
+async function shutdown() {
+  try { await db.flushAll(); } catch (e) {}
+  if (!db.enabled) flushAllSavesSync();
+  process.exit(0);
+}
+process.on('SIGTERM', () => { shutdown(); });
+process.on('SIGINT', () => { shutdown(); });
 
 // ---------- Upload de arquivos no chat (até 10MB, tipo o "clipzinho" do Discord) ----------
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
@@ -467,7 +477,9 @@ channels.forEach(ch => {
 })();
 
 function saveChannels() {
-  saveJsonDebounced(CHANNELS_FILE, () => channels);
+  if (!persistenceReady) return;
+  if (db.enabled) db.saveKvDebounced('channels', channels);
+  else saveJsonDebounced(CHANNELS_FILE, () => channels);
 }
 registerFlushable(CHANNELS_FILE, () => channels);
 saveChannels();
@@ -505,7 +517,9 @@ try {
 if (!dspeakServers.some(s => s.id === 'dspeak')) dspeakServers.unshift(DEFAULT_SERVER);
 
 function saveServers() {
-  saveJsonDebounced(SERVERS_FILE, () => dspeakServers);
+  if (!persistenceReady) return;
+  if (db.enabled) db.saveKvDebounced('servers', dspeakServers);
+  else saveJsonDebounced(SERVERS_FILE, () => dspeakServers);
 }
 registerFlushable(SERVERS_FILE, () => dspeakServers);
 saveServers();
@@ -611,7 +625,9 @@ Object.keys(roles).forEach(key => {
 });
 
 function saveRoles() {
-  saveJsonDebounced(ROLES_FILE, () => roles);
+  if (!persistenceReady) return;
+  if (db.enabled) db.saveKvDebounced('roles', roles);
+  else saveJsonDebounced(ROLES_FILE, () => roles);
 }
 registerFlushable(ROLES_FILE, () => roles);
 
@@ -665,7 +681,9 @@ try {
 }
 
 function saveMessages() {
-  saveJsonDebounced(MESSAGES_FILE, () => messages);
+  if (!persistenceReady) return;
+  if (db.enabled) db.saveKvDebounced('messages', messages);
+  else saveJsonDebounced(MESSAGES_FILE, () => messages);
 }
 registerFlushable(MESSAGES_FILE, () => messages);
 
@@ -700,7 +718,9 @@ try {
 }
 
 function saveDirectMessages() {
-  saveJsonDebounced(DM_FILE, () => directMessages);
+  if (!persistenceReady) return;
+  if (db.enabled) db.saveKvDebounced('dms', directMessages);
+  else saveJsonDebounced(DM_FILE, () => directMessages);
 }
 registerFlushable(DM_FILE, () => directMessages);
 
@@ -724,42 +744,138 @@ function pruneAllDms() {
 pruneAllDms();
 setInterval(pruneAllDms, 60 * 60 * 1000);
 
+// ---------- Contas (apelido + senha) ----------
+const USERS_FILE = path.join(DATA_DIR, 'users.json');
+let accounts = {}; // usernameKey -> { username, passwordHash, avatarUrl, sessionToken, createdAt }
+
+function saveAccounts() {
+  if (!persistenceReady) return;
+  if (db.enabled) return; // cada conta é gravada no upsert
+  saveJsonDebounced(USERS_FILE, () => accounts);
+}
+registerFlushable(USERS_FILE, () => accounts);
+
+function newSessionToken() {
+  return crypto.randomBytes(24).toString('hex');
+}
+
+function isValidUsername(name) {
+  const s = String(name || '').trim();
+  if (s.length < 2 || s.length > 24) return false;
+  return /^[\p{L}\p{N} _.\-]+$/u.test(s);
+}
+
+function isValidPassword(pw) {
+  return typeof pw === 'string' && pw.length >= 6 && pw.length <= 72;
+}
+
+function persistAccount(key, acc) {
+  accounts[key] = acc;
+  if (db.enabled) {
+    return db.upsertUser({
+      usernameKey: key,
+      username: acc.username,
+      passwordHash: acc.passwordHash,
+      avatarUrl: acc.avatarUrl || null,
+      sessionToken: acc.sessionToken || null,
+      createdAt: acc.createdAt || Date.now()
+    }).catch((e) => console.error('[DSpeak] Não consegui gravar a conta no Postgres:', e.message));
+  }
+  saveAccounts();
+  return Promise.resolve();
+}
+
+function attachUserSession(socket, username, avatarUrl) {
+  socket.username = username;
+  socket.avatarUrl = avatarUrl || '';
+  socket.usernameKey = keyOf(username);
+
+  const role = resolveRole(username);
+  socket.role = role;
+  socket.emit('your-role', { role, username });
+
+  findSocketsByUsername(username).forEach(otherSocket => {
+    if (otherSocket.id !== socket.id) {
+      otherSocket.emit('session-replaced');
+      otherSocket.disconnect(true);
+    }
+  });
+
+  socket.emit('update-voice-users', voiceUsers);
+  sendMyServers(socket);
+  socket.emit('user-statuses', userStatuses);
+}
+
 io.on('connection', (socket) => {
   console.log('Cliente conectado:', socket.id);
 
-  socket.on('register-user', (data) => {
-    socket.username = data.username;
-    socket.avatarUrl = data.avatarUrl;
-    socket.usernameKey = keyOf(data.username);
-
-    const role = resolveRole(data.username);
-    socket.role = role;
-    socket.emit('your-role', { role, username: data.username });
-
-    // Só uma sessão ativa por vez pra cada pessoa (tipo WhatsApp Web) — se essa
-    // pessoa já estava conectada em outro lugar (outra aba, outro dispositivo, o
-    // app desktop E o site ao mesmo tempo), essa conexão ANTIGA é desconectada
-    // agora, com um aviso — evita ficar "meio conectado" em dois lugares ao mesmo
-    // tempo (duplicando na lista de voz, brigando por quem está "realmente" ali).
-    findSocketsByUsername(data.username).forEach(otherSocket => {
-      if (otherSocket.id !== socket.id) {
-        otherSocket.emit('session-replaced');
-        otherSocket.disconnect(true);
+  socket.on('register-user', async (data) => {
+    try {
+      const username = String((data && data.username) || '').trim();
+      if (!isValidUsername(username)) {
+        socket.emit('auth-failed', { message: 'Apelido inválido (2 a 24 letras, números, espaço, ponto ou hífen).' });
+        return;
       }
-    });
+      const key = keyOf(username);
+      const mode = data && data.mode;
+      const password = data && data.password;
+      const token = data && data.token;
+      let acc = accounts[key];
+      const incomingAvatar = typeof (data && data.avatarUrl) === 'string' ? data.avatarUrl : '';
 
-    // Manda pro cliente que acabou de entrar o retrato atual de quem já está
-    // conectado nas salas de voz. Sem isso, ele só ficava sabendo quando alguém
-    // MAIS entrava ou saía depois — por isso a lista ficava vazia até você mesmo
-    // entrar numa sala (o que aí sim disparava uma atualização).
-    socket.emit('update-voice-users', voiceUsers);
+      // Reconexão automática: o app guarda um token depois do login.
+      if (token && acc && acc.sessionToken && token === acc.sessionToken) {
+        if (incomingAvatar) acc.avatarUrl = incomingAvatar;
+        await persistAccount(key, acc);
+        attachUserSession(socket, acc.username, acc.avatarUrl);
+        socket.emit('auth-ok', { username: acc.username, avatarUrl: acc.avatarUrl || '', token: acc.sessionToken });
+        return;
+      }
 
-    // Manda só os servidores dos quais essa pessoa é membro, cada um já com seus
-    // próprios canais — nunca a lista de canais de TODOS os servidores de todo mundo.
-    sendMyServers(socket);
+      if (mode === 'register') {
+        if (!isValidPassword(password)) {
+          socket.emit('auth-failed', { message: 'A senha precisa ter pelo menos 6 caracteres.' });
+          return;
+        }
+        if (acc) {
+          socket.emit('auth-failed', { message: 'Esse apelido já tem conta. Entra com a senha.' });
+          return;
+        }
+        acc = {
+          username,
+          passwordHash: hashServerPassword(password),
+          avatarUrl: incomingAvatar,
+          sessionToken: newSessionToken(),
+          createdAt: Date.now()
+        };
+        await persistAccount(key, acc);
+        attachUserSession(socket, username, acc.avatarUrl);
+        socket.emit('auth-ok', { username, avatarUrl: acc.avatarUrl || '', token: acc.sessionToken });
+        return;
+      }
 
-    // Retrato atual dos status de todo mundo (bolinha verde/amarela/vermelha).
-    socket.emit('user-statuses', userStatuses);
+      if (mode === 'login' || (typeof password === 'string' && password.length > 0)) {
+        if (!acc) {
+          socket.emit('auth-failed', { message: 'Não achei uma conta com esse apelido. Cria uma em "Criar conta".' });
+          return;
+        }
+        if (!acc.passwordHash || !verifyServerPassword(password, acc.passwordHash)) {
+          socket.emit('auth-failed', { message: 'Senha incorreta.' });
+          return;
+        }
+        acc.sessionToken = newSessionToken();
+        if (incomingAvatar) acc.avatarUrl = incomingAvatar;
+        await persistAccount(key, acc);
+        attachUserSession(socket, acc.username, acc.avatarUrl);
+        socket.emit('auth-ok', { username: acc.username, avatarUrl: acc.avatarUrl || '', token: acc.sessionToken });
+        return;
+      }
+
+      socket.emit('auth-required', { message: 'Entra com seu apelido e senha.' });
+    } catch (e) {
+      console.error('[DSpeak] Falha no login/cadastro:', e);
+      socket.emit('auth-failed', { message: 'Não deu pra entrar agora. Tenta de novo.' });
+    }
   });
 
   // Status escolhido no seletor do rodapé — replica pra todo mundo na hora.
@@ -775,13 +891,20 @@ io.on('connection', (socket) => {
   // Sem isso, só o rodapé de quem mudou o perfil atualizava (feito localmente);
   // a lista de voz e os cards do palco ficavam com os dados antigos até reconectar.
   socket.on('change-profile', (data) => {
-    const { newName, avatarUrl } = data;
-    socket.username = newName;
-    socket.avatarUrl = avatarUrl;
+    if (!socket.username) return;
+    // O apelido da conta não muda mais (é o login). Só a foto.
+    const avatarUrl = data && data.avatarUrl;
+    socket.avatarUrl = avatarUrl || '';
+    const acc = accounts[socket.usernameKey];
+    if (acc) {
+      acc.avatarUrl = socket.avatarUrl;
+      if (db.enabled) db.updateUserAvatar(socket.usernameKey, acc.avatarUrl).catch(() => {});
+      else saveAccounts();
+    }
 
     Object.keys(voiceUsers).forEach(channelId => {
       voiceUsers[channelId] = voiceUsers[channelId].map(u =>
-        u.socketId === socket.id ? { ...u, name: newName, avatarUrl } : u
+        u.socketId === socket.id ? { ...u, avatarUrl: socket.avatarUrl } : u
       );
     });
     io.emit('update-voice-users', voiceUsers);
@@ -1571,4 +1694,60 @@ io.on('connection', (socket) => {
 // o padrão pra rodar local. Com a porta fixa em 3000, o deploy simplesmente não
 // funcionava em serviços que exigem escutar na porta que ELES escolhem.
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Servidor DSpeak rodando na porta ${PORT}`));
+
+async function boot() {
+  try {
+    if (db.enabled) {
+      await db.init();
+      const snap = await db.loadSnapshot();
+      if (snap.channels && snap.channels.length) channels = snap.channels;
+      if (snap.servers && snap.servers.length) dspeakServers = snap.servers;
+      if (snap.roles) roles = snap.roles;
+      if (snap.messages) messages = snap.messages;
+      if (snap.dms) directMessages = snap.dms;
+      accounts = {};
+      (snap.users || []).forEach((row) => {
+        accounts[row.username_key] = {
+          username: row.username,
+          passwordHash: row.password_hash,
+          avatarUrl: row.avatar_url || '',
+          sessionToken: row.session_token || '',
+          createdAt: Number(row.created_at) || Date.now()
+        };
+      });
+    } else {
+      try {
+        if (fs.existsSync(USERS_FILE)) {
+          const loaded = JSON.parse(fs.readFileSync(USERS_FILE, 'utf8'));
+          if (loaded && typeof loaded === 'object') accounts = loaded;
+        }
+      } catch (e) {
+        console.error('Não foi possível ler users.json, começando sem contas.', e);
+        accounts = {};
+      }
+    }
+
+    DEFAULT_CHANNELS.forEach(defCh => {
+      if (!channels.some(c => c.id === defCh.id)) channels.push({ ...defCh });
+    });
+    if (!dspeakServers.some(s => s.id === 'dspeak')) dspeakServers.unshift(DEFAULT_SERVER);
+
+    pruneAllMessages();
+    pruneAllDms();
+
+    persistenceReady = true;
+    saveChannels();
+    saveServers();
+    saveRoles();
+    saveMessages();
+    saveDirectMessages();
+    saveAccounts();
+  } catch (e) {
+    console.error('[DSpeak] Falha ao ligar o banco. O servidor sobe mesmo assim, mas os dados podem não persistir:', e);
+    persistenceReady = true;
+  }
+
+  server.listen(PORT, () => console.log(`Servidor DSpeak rodando na porta ${PORT}`));
+}
+
+boot();

@@ -13,7 +13,8 @@
   "type": "commonjs",
   "dependencies": {
     "express": "^5.2.1",
-    "socket.io": "^4.8.3",
-    "multer": "^2.0.2"
+    "multer": "^2.0.2",
+    "pg": "^8.23.0",
+    "socket.io": "^4.8.3"
   }
 }
