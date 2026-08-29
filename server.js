@@ -7,6 +7,7 @@ const multer = require('multer');
 const crypto = require('crypto');
 const db = require('./db');
 const mail = require('./mail');
+const sfu = require('./sfu');
 
 const app = express();
 const server = http.createServer(app);
@@ -102,6 +103,31 @@ app.get('/turn-credentials', async (req, res) => {
   }
 });
 
+// ---------- Deploy sem derrubar todo mundo ----------
+// Dois tipos de atualização:
+//   1. Só tela (HTML/CSS/JS do cliente): `git pull` e pronto — o Node nem
+//      reinicia, ninguém cai. O cliente consulta /client-version de tempos em
+//      tempos e mostra um botão "Atualizar" quando o arquivo mudar no disco.
+//   2. Servidor (este arquivo): o script de deploy chama /admin/announce-restart
+//      ANTES do pm2 restart — todo mundo recebe o aviso, a fila de música é
+//      salva no banco, e ao voltar (2-4s) cada cliente re-entra sozinho na
+//      mesma sala de voz (rejoinVoiceIfNeeded já faz isso após o auth-ok).
+const ADMIN_KEY = process.env.ADMIN_KEY || '';
+
+app.get('/client-version', (req, res) => {
+  fs.stat(path.join(__dirname, 'public', 'index.html'), (err, st) => {
+    res.json({ v: err ? '0' : String(Math.floor(st.mtimeMs)) });
+  });
+});
+
+app.post('/admin/announce-restart', async (req, res) => {
+  if (!ADMIN_KEY || req.headers['x-admin-key'] !== ADMIN_KEY) return res.status(403).json({ error: 'forbidden' });
+  io.emit('server-update-notice', { seconds: 5 });
+  try { await persistMusicNow(); } catch (e) {}
+  console.log('[DSpeak] Aviso de atualização enviado a todos os clientes — reinicie em ~5s.');
+  res.json({ ok: true });
+});
+
 // ---------- Pasta de dados persistentes ----------
 // IMPORTANTE: no Render (e na maioria dos serviços de hospedagem "sem estado"), a
 // pasta do projeto é recriada do ZERO a cada novo deploy — qualquer arquivo que não
@@ -183,6 +209,7 @@ function flushAllSavesSync() {
   });
 }
 async function shutdown() {
+  try { await persistMusicNow(); } catch (e) {}
   try { await db.flushAll(); } catch (e) {}
   if (!db.enabled) flushAllSavesSync();
   process.exit(0);
@@ -306,6 +333,28 @@ function broadcastStatuses() {
 const roomMusic = {};
 const MUSIC_MAX_QUEUE = 40;
 const MUSIC_MAX_URL = 500;
+
+// A fila de música sobrevive a restart do servidor (deploy): é salva no banco
+// (ou em music.json) na hora do aviso de atualização e no desligamento, e
+// restaurada no boot — quem estava ouvindo volta praticamente do mesmo ponto.
+const MUSIC_FILE = path.join(DATA_DIR, 'music.json');
+async function persistMusicNow() {
+  try {
+    Object.values(roomMusic).forEach(freezeMusicPosition);
+    if (db.enabled) await db.setKvNow('music', roomMusic);
+    else fs.writeFileSync(MUSIC_FILE, JSON.stringify(roomMusic));
+  } catch (e) {
+    console.error('[DSpeak] Não consegui salvar a fila de música:', e.message);
+  }
+}
+function restoreMusicFromSnapshot(saved) {
+  if (!saved || typeof saved !== 'object') return;
+  Object.entries(saved).forEach(([chId, sess]) => {
+    if (sess && Array.isArray(sess.queue) && sess.queue.length) {
+      roomMusic[chId] = { ...sess, updatedAt: Date.now() };
+    }
+  });
+}
 
 function parseMusicLink(raw) {
   let s = String(raw || '').trim();
@@ -622,6 +671,22 @@ function serverOfChannel(channelId) {
   return dspeakServers.find(s => s.id === ch.serverId) || null;
 }
 
+// Quem pode mexer no player da sala (play/pause/pular/seek/fila): dono ou
+// moderador do servidor, ou quem colocou a música que está tocando AGORA.
+// Qualquer um continua podendo ADICIONAR na fila — só não atropela os outros.
+function canControlMusic(socket, channelId) {
+  const srv = serverOfChannel(channelId);
+  if (srv && canManageServer(socket, srv)) return true;
+  const session = roomMusic[channelId];
+  const current = session && session.queue.find(i => i.id === session.currentId);
+  return !!(current && current.addedBy && socket.username &&
+    String(current.addedBy).toLowerCase() === String(socket.username).toLowerCase());
+}
+
+function denyMusicControl(socket) {
+  socket.emit('music-error', 'Só quem colocou a música atual, o dono ou um moderador do servidor pode controlar o player.');
+}
+
 // Manda pro socket a lista dos servidores dos quais ele é membro (nunca inclui o
 // hash da senha — só se TEM senha ou não).
 // Nunca manda o hash da senha de uma sala de voz pro cliente — só se ELA TEM senha
@@ -914,6 +979,18 @@ function attachUserSession(socket, username, avatarUrl) {
 
 io.on('connection', (socket) => {
   console.log('Cliente conectado:', socket.id);
+
+  // SFU: avisa o cliente se a transmissão de tela via servidor está disponível
+  // (se não estiver, ele usa o modo mesh antigo sozinho) e registra os eventos
+  // de sinalização (sfu-caps, sfu-create-transport, sfu-produce, sfu-consume...).
+  socket.emit('sfu-available', sfu.isReady());
+  sfu.attachSocketHandlers(io, socket, {
+    currentChannelOf: (s) => {
+      const chId = s.currentVoiceChannel;
+      if (!chId || chId === WAITING_VOICE_ROOM) return null;
+      return chId;
+    }
+  });
 
   socket.on('register-user', async (data) => {
     try {
@@ -1706,6 +1783,14 @@ io.on('connection', (socket) => {
   socket.on('join-voice-room', (data) => {
     let { channelId, username, avatarUrl, password } = data;
 
+    // Trocou de sala: as transmissões SFU (produzindo ou assistindo) da sala
+    // antiga não valem mais — fecha tudo e libera o router se a sala esvaziou.
+    if (socket.currentVoiceChannel && socket.currentVoiceChannel !== channelId) {
+      const oldChannel = socket.currentVoiceChannel;
+      sfu.cleanupSocket(socket.id);
+      sfu.closeRouterIfUnused(oldChannel);
+    }
+
     if (!voiceUsers[channelId]) voiceUsers[channelId] = [];
 
     const alreadyThere = voiceUsers[channelId].some(u => u.socketId === socket.id);
@@ -1803,6 +1888,8 @@ io.on('connection', (socket) => {
     }
     if (socket.currentVoiceChannel === channelId) socket.currentVoiceChannel = null;
     destroyMusicIfRoomEmpty(channelId);
+    sfu.cleanupSocket(socket.id);
+    sfu.closeRouterIfUnused(channelId);
   });
 
   socket.on('start-streaming', (channelId) => {
@@ -1818,6 +1905,7 @@ io.on('connection', (socket) => {
     if (activeRoomStreams[channelId]) {
       activeRoomStreams[channelId] = activeRoomStreams[channelId].filter(id => id !== socket.id);
     }
+    sfu.closeProducers(socket.id);
     socket.to(channelId).emit('user-stopped-streaming', socket.id);
   });
 
@@ -1906,6 +1994,7 @@ io.on('connection', (socket) => {
   socket.on('music-play', () => {
     const channelId = currentMusicChannelOf(socket);
     if (!channelId || !roomMusic[channelId]) return;
+    if (!canControlMusic(socket, channelId)) return denyMusicControl(socket);
     const session = roomMusic[channelId];
     if (!session.currentId && session.queue[0]) session.currentId = session.queue[0].id;
     if (!session.currentId) return;
@@ -1918,6 +2007,7 @@ io.on('connection', (socket) => {
   socket.on('music-pause', () => {
     const channelId = currentMusicChannelOf(socket);
     if (!channelId || !roomMusic[channelId]) return;
+    if (!canControlMusic(socket, channelId)) return denyMusicControl(socket);
     const session = roomMusic[channelId];
     freezeMusicPosition(session);
     session.playing = false;
@@ -1927,6 +2017,7 @@ io.on('connection', (socket) => {
   socket.on('music-seek', (data) => {
     const channelId = currentMusicChannelOf(socket);
     if (!channelId || !roomMusic[channelId]) return;
+    if (!canControlMusic(socket, channelId)) return denyMusicControl(socket);
     const seconds = Number(data && data.seconds);
     if (!Number.isFinite(seconds) || seconds < 0 || seconds > 12 * 3600) return;
     const session = roomMusic[channelId];
@@ -1938,6 +2029,7 @@ io.on('connection', (socket) => {
   socket.on('music-skip', () => {
     const channelId = currentMusicChannelOf(socket);
     if (!channelId || !roomMusic[channelId]) return;
+    if (!canControlMusic(socket, channelId)) return denyMusicControl(socket);
     musicAdvance(roomMusic[channelId], 1);
     emitMusicState(channelId);
   });
@@ -1945,6 +2037,7 @@ io.on('connection', (socket) => {
   socket.on('music-prev', () => {
     const channelId = currentMusicChannelOf(socket);
     if (!channelId || !roomMusic[channelId]) return;
+    if (!canControlMusic(socket, channelId)) return denyMusicControl(socket);
     const session = roomMusic[channelId];
     if (computeMusicPosition(session) > 3) {
       session.positionSec = 0;
@@ -1958,6 +2051,7 @@ io.on('connection', (socket) => {
   socket.on('music-jump', (data) => {
     const channelId = currentMusicChannelOf(socket);
     if (!channelId || !roomMusic[channelId]) return;
+    if (!canControlMusic(socket, channelId)) return denyMusicControl(socket);
     const itemId = String((data && data.itemId) || '');
     const session = roomMusic[channelId];
     if (!session.queue.some(i => i.id === itemId)) return;
@@ -1974,6 +2068,13 @@ io.on('connection', (socket) => {
     if (!channelId || !roomMusic[channelId]) return;
     const itemId = String((data && data.itemId) || '');
     const session = roomMusic[channelId];
+    // Tirar da fila: moderador/dono pode tirar qualquer uma; pessoa comum só
+    // tira as músicas que ELA mesma colocou.
+    const item = session.queue.find(i => i.id === itemId);
+    const srv = serverOfChannel(channelId);
+    const isMine = !!(item && item.addedBy && socket.username &&
+      String(item.addedBy).toLowerCase() === String(socket.username).toLowerCase());
+    if (!isMine && !(srv && canManageServer(socket, srv))) return denyMusicControl(socket);
     const wasCurrent = session.currentId === itemId;
     session.queue = session.queue.filter(i => i.id !== itemId);
     if (wasCurrent) {
@@ -2009,10 +2110,13 @@ io.on('connection', (socket) => {
       socket.to(channelId).emit('user-stopped-streaming', socket.id);
     });
 
+    const lastChannel = socket.currentVoiceChannel;
+    sfu.cleanupSocket(socket.id);
     Object.keys(voiceUsers).forEach(channelId => {
       voiceUsers[channelId] = voiceUsers[channelId].filter(u => u.socketId !== socket.id);
       destroyMusicIfRoomEmpty(channelId);
     });
+    if (lastChannel) sfu.closeRouterIfUnused(lastChannel);
     socket.currentVoiceChannel = null;
     io.emit('update-voice-users', voiceUsers);
   });
@@ -2067,6 +2171,16 @@ async function boot() {
     pruneAllMessages();
     pruneAllDms();
 
+    // Restaura a fila de música salva no último desligamento/deploy.
+    try {
+      let savedMusic = null;
+      if (db.enabled) savedMusic = await db.getKv('music');
+      else if (fs.existsSync(MUSIC_FILE)) savedMusic = JSON.parse(fs.readFileSync(MUSIC_FILE, 'utf8'));
+      restoreMusicFromSnapshot(savedMusic);
+    } catch (e) {
+      console.error('[DSpeak] Não consegui restaurar a fila de música:', e.message);
+    }
+
     persistenceReady = true;
     saveChannels();
     saveServers();
@@ -2078,6 +2192,10 @@ async function boot() {
     console.error('[DSpeak] Falha ao ligar o banco. O servidor sobe mesmo assim, mas os dados podem não persistir:', e);
     persistenceReady = true;
   }
+
+  // Liga o SFU antes de aceitar conexões — assim todo cliente já entra sabendo
+  // se a transmissão via servidor está disponível ou não.
+  await sfu.init();
 
   server.listen(PORT, () => {
     console.log(`Servidor DSpeak rodando na porta ${PORT}`);

@@ -188,6 +188,8 @@ module.exports = {
   enabled,
   init,
   loadSnapshot,
+  getKv,
+  setKvNow,
   saveKvDebounced,
   flushAll,
   upsertUser,

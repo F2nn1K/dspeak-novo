@@ -492,7 +492,7 @@
        palco — SEM esticar até o chão quando tem pouca gente na sala. */
     .stage-layout.no-streams .connected-users-stage {
       flex: 1; max-height: none; display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 460px));
+      grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 420px));
       grid-auto-rows: max-content;
       align-content: safe center; justify-content: center;
       gap: 14px;
@@ -500,7 +500,7 @@
     }
     .stage-layout.no-streams .user-card {
       width: 100%; height: auto; min-height: 0;
-      aspect-ratio: 16 / 9; max-height: 280px;
+      aspect-ratio: 16 / 9; max-height: 240px;
       gap: 10px;
     }
     .stage-layout.no-streams .card-avatar { width: 76px; height: 76px; font-size: 30px; border-width: 3px; }
@@ -573,6 +573,21 @@
     }
     #music-together.is-visible { display: flex; }
     #music-together.is-open { max-height: min(48vh, 380px); }
+    #music-mute-btn.is-muted { background: rgba(255, 51, 51, 0.22); border-color: rgba(255, 51, 51, 0.5); }
+    #music-mute-btn.is-muted svg { stroke: #ff5555; }
+
+    /* Aviso de versão nova do app (deploy só de tela — atualiza quando quiser) */
+    #client-update-banner {
+      position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 9999;
+      background: #13151b; border: 1px solid rgba(255, 85, 0, 0.5); border-radius: 12px;
+      padding: 10px 14px; display: flex; gap: 10px; align-items: center; color: #fff;
+      font-size: 13px; box-shadow: 0 12px 35px rgba(0, 0, 0, 0.85);
+    }
+    #client-update-banner button {
+      background: #ff5500; border: none; color: #fff; font-weight: 800;
+      padding: 6px 12px; border-radius: 8px; cursor: pointer; font-size: 12px;
+    }
+    #client-update-banner button.later { background: transparent; border: 1px solid rgba(255,255,255,0.25); font-weight: 600; }
     #music-together.is-visible:not(.is-open) { flex-direction: row; align-items: center; padding: 8px; gap: 8px; }
     #music-together.is-visible:not(.is-open) .music-cover-wrap { width: 52px; height: 52px; flex-shrink: 0; border-radius: 8px; }
     #music-together.is-visible:not(.is-open) .music-queue-wrap,
@@ -964,6 +979,7 @@
               <button class="music-ctrl" title="Anterior" onclick="musicPrev()"><svg viewBox="0 0 24 24"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/></svg></button>
               <button class="music-ctrl play" id="music-play-btn" title="Play/Pause" onclick="musicTogglePlay()"><svg viewBox="0 0 24 24" id="music-play-icon"><polygon points="6 4 20 12 6 20 6 4"/></svg></button>
               <button class="music-ctrl" title="Próxima" onclick="musicSkip()"><svg viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg></button>
+              <button class="music-ctrl" id="music-mute-btn" title="Silenciar a música só pra mim" onclick="toggleMusicLocalMute()"></button>
             </div>
           </div>
           <div class="music-progress-row">
@@ -1148,12 +1164,12 @@
 
             <div class="opt-sec-label">RESOLUÇÃO DE VÍDEO</div>
             <div class="opt-grid">
-              <div class="opt-card" id="opt-res-720" onclick="selectRes('720')">
-                <div><div class="opt-card-title">720p HD</div><div class="opt-card-sub">Otimizado para conexões rápidas</div></div>
+              <div class="opt-card selected" id="opt-res-720" onclick="selectRes('720')">
+                <div><div class="opt-card-title">720p HD</div><div class="opt-card-sub">Recomendado — leve pro seu PC e ótimo pra assistir (padrão)</div></div>
                 <div class="opt-radio-dot"></div>
               </div>
-              <div class="opt-card selected" id="opt-res-1080" onclick="selectRes('1080')">
-                <div><div class="opt-card-title">1080p Full HD</div><div class="opt-card-sub">Qualidade máxima de definição (padrão)</div></div>
+              <div class="opt-card" id="opt-res-1080" onclick="selectRes('1080')">
+                <div><div class="opt-card-title">1080p Full HD</div><div class="opt-card-sub">Mais nitidez, pesa mais na CPU</div></div>
                 <div class="opt-radio-dot"></div>
               </div>
               <div class="opt-card" id="opt-res-1440" onclick="selectRes('1440')">
@@ -1164,12 +1180,12 @@
 
             <div class="opt-sec-label" style="margin-top: 6px;">TAXA DE QUADROS (FPS)</div>
             <div class="opt-grid">
-              <div class="opt-card" id="opt-fps-30" onclick="selectFps('30')">
-                <div><div class="opt-card-title">30 FPS</div><div class="opt-card-sub">Padrão fluido para chamadas</div></div>
+              <div class="opt-card selected" id="opt-fps-30" onclick="selectFps('30')">
+                <div><div class="opt-card-title">30 FPS</div><div class="opt-card-sub">Recomendado — fluido e leve (padrão)</div></div>
                 <div class="opt-radio-dot"></div>
               </div>
-              <div class="opt-card selected" id="opt-fps-60" onclick="selectFps('60')">
-                <div><div class="opt-card-title">60 FPS</div><div class="opt-card-sub">Ultra-fluido para jogos e vídeos (padrão)</div></div>
+              <div class="opt-card" id="opt-fps-60" onclick="selectFps('60')">
+                <div><div class="opt-card-title">60 FPS</div><div class="opt-card-sub">Ultra-fluido para jogos, pesa mais na CPU</div></div>
                 <div class="opt-radio-dot"></div>
               </div>
             </div>
@@ -1637,6 +1653,10 @@
     });
 
     socket.on('connect', () => {
+      // Os transportes SFU morrem junto com a conexão antiga (rede piscou ou o
+      // servidor reiniciou num deploy) — limpa e deixa o rejoin reabrir tudo.
+      sfuHandleReconnect();
+
       if (!username || !sessionToken) return; // ainda na tela de login — o fluxo normal cuida disso
 
       // Se reconectamos, o servidor esqueceu quem éramos (novo socket.id) — precisa
@@ -1661,6 +1681,40 @@
       document.getElementById('reconnect-overlay').classList.remove('visible');
     }
 
+    // ---------- Deploy sem susto ----------
+    // Atualização de SERVIDOR: o deploy avisa a todos antes de reiniciar — a
+    // conexão cai por 2-4 segundos e volta sozinha (com re-entrada na sala de
+    // voz, via rejoinVoiceIfNeeded). Ninguém precisa fazer nada.
+    socket.on('server-update-notice', () => {
+      showToast('🔄 O DSpeak vai atualizar em instantes — você reconecta sozinho, não precisa fazer nada.');
+    });
+
+    // Atualização só de TELA: o servidor nem reinicia; o app percebe que o
+    // arquivo mudou no servidor e oferece um botão de recarregar — cada um
+    // atualiza quando quiser (ex: depois que a call acabar).
+    let bootClientVersion = null;
+    let updateBannerShown = false;
+    async function checkClientVersion() {
+      try {
+        const res = await fetch('/client-version', { cache: 'no-store' });
+        const data = await res.json();
+        if (!data || !data.v || data.v === '0') return;
+        if (bootClientVersion === null) { bootClientVersion = data.v; return; }
+        if (data.v !== bootClientVersion && !updateBannerShown) showClientUpdateBanner();
+      } catch (e) {}
+    }
+    function showClientUpdateBanner() {
+      updateBannerShown = true;
+      const el = document.createElement('div');
+      el.id = 'client-update-banner';
+      el.innerHTML = '<span>✨ Tem uma versão nova do DSpeak.</span>' +
+        '<button onclick="location.reload()">Atualizar agora</button>' +
+        '<button class="later" onclick="this.parentElement.remove()">Depois</button>';
+      document.body.appendChild(el);
+    }
+    checkClientVersion();
+    setInterval(checkClientVersion, 5 * 60 * 1000);
+
     let tempAvatarUrl = "";
     // A mesma telinha de recortar imagem (crop) é reaproveitada aqui pro ícone do
     // servidor — esse valor diz qual dos dois estamos editando no momento, pra
@@ -1681,9 +1735,12 @@
     // voz. Ver uso em pc.ontrack.
     const knownScreenStreamIds = new Set();
 
-    let selectedResolution = "1080";
-    let selectedFps = "60";
-    let selectedStreamQuality = "medium"; // low | medium | high — controla o bitrate da transmissão
+    // Padrão novo: 720p@30 — o encode fica MUITO mais leve pro PC de quem
+    // transmite, e pra assistir tela de amigo a diferença é mínima. Quem quiser
+    // mais sobe nas configurações (a escolha fica salva).
+    let selectedResolution = localStorage.getItem('dspeak_stream_res') || "720";
+    let selectedFps = localStorage.getItem('dspeak_stream_fps') || "30";
+    let selectedStreamQuality = localStorage.getItem('dspeak_stream_quality') || "medium"; // low | medium | high — controla o bitrate da transmissão
     const STREAM_QUALITY_BITRATES = { low: 2_500_000, medium: 6_000_000, high: 12_000_000 };
     let selectedInputMode = "vad";
     // Item 9: Push-to-Talk — a tecla configurada (código do evento de teclado, ex:
@@ -2283,6 +2340,17 @@
       socket.emit('join-voice-room', { channelId: connectedVoiceChannel, username, avatarUrl: userAvatarUrl, type: 'voice', password: connectedVoiceChannelPassword });
       socket.emit('join-room', connectedVoiceChannel);
 
+      // Se estávamos TRANSMITINDO via SFU quando a conexão caiu (deploy do
+      // servidor, por exemplo), republica a tela sozinho — quem assistia recebe
+      // o aviso de live e reabre sem ninguém precisar clicar em nada.
+      if (localStream && sfuAvailable) {
+        setTimeout(async () => {
+          if (!localStream || !connectedVoiceChannel) return;
+          const ok = await sfuPublishScreen();
+          if (ok) socket.emit('start-streaming', connectedVoiceChannel);
+        }, 800);
+      }
+
       Object.keys(peerConnections).forEach(id => { peerConnections[id].close(); delete peerConnections[id]; });
       Object.keys(peerAudioEls).forEach(removeRemoteMicAudio);
       micSenders = {};
@@ -2843,6 +2911,7 @@
 
     function selectRes(res) {
       selectedResolution = res;
+      localStorage.setItem('dspeak_stream_res', res);
       document.getElementById('opt-res-720').classList.toggle('selected', res === '720');
       document.getElementById('opt-res-1080').classList.toggle('selected', res === '1080');
       document.getElementById('opt-res-1440').classList.toggle('selected', res === '1440');
@@ -2850,17 +2919,27 @@
 
     function selectFps(fps) {
       selectedFps = fps;
+      localStorage.setItem('dspeak_stream_fps', fps);
       document.getElementById('opt-fps-30').classList.toggle('selected', fps === '30');
       document.getElementById('opt-fps-60').classList.toggle('selected', fps === '60');
     }
 
     function selectStreamQuality(quality) {
       selectedStreamQuality = quality;
+      localStorage.setItem('dspeak_stream_quality', quality);
       document.getElementById('opt-quality-low').classList.toggle('selected', quality === 'low');
       document.getElementById('opt-quality-medium').classList.toggle('selected', quality === 'medium');
       document.getElementById('opt-quality-high').classList.toggle('selected', quality === 'high');
       applyStreamQualityToActiveShare();
     }
+
+    // Reflete nas configurações a escolha salva da última vez (ou o padrão novo,
+    // 720p@30) — sem isso os cards marcados no HTML podiam divergir do valor real.
+    selectRes(selectedResolution);
+    selectFps(selectedFps);
+    document.getElementById('opt-quality-low').classList.toggle('selected', selectedStreamQuality === 'low');
+    document.getElementById('opt-quality-medium').classList.toggle('selected', selectedStreamQuality === 'medium');
+    document.getElementById('opt-quality-high').classList.toggle('selected', selectedStreamQuality === 'high');
 
     function toggleVoiceOnlyChannelFields(prefix) {
       const type = prefix === 'new'
@@ -3911,7 +3990,15 @@
 
       watchedStreams[targetSocketId] = true;
       console.log(`[Stream] pedindo pra assistir ${targetSocketId}`);
-      socket.emit('request-watch-stream', { targetSocketId });
+      // Primeiro tenta pelo SFU (servidor replica — zero custo extra pro
+      // streamer). Se o streamer não publicou lá, cai no pedido mesh antigo.
+      if (sfuAvailable) {
+        sfuWatch(targetSocketId).then(ok => {
+          if (!ok && watchedStreams[targetSocketId]) socket.emit('request-watch-stream', { targetSocketId });
+        });
+      } else {
+        socket.emit('request-watch-stream', { targetSocketId });
+      }
       renderChannels();
       renderStageUsers();
 
@@ -4254,6 +4341,7 @@
       watchedStreams = {};
       activeStreams = {};
       currentRoomIsSilent = false;
+      sfuResetLocal();
       resetMusicLocal();
 
       renderChannels();
@@ -4586,8 +4674,33 @@
       return `${m}:${String(s).padStart(2, '0')}`;
     }
 
+    // "Ouvir ou não": cada pessoa decide se quer escutar a música da sala — sem
+    // afetar ninguém. A escolha fica salva (localStorage) entre sessões. Também
+    // silencia junto quando a pessoa ensurdece (isDeafened), como esperado.
+    let musicLocalMuted = localStorage.getItem('dspeak_music_muted') === '1';
+
     function musicOutputShouldMute() {
-      return !!(isDeafened || autoMutedForStreamAudio);
+      return !!(isDeafened || autoMutedForStreamAudio || musicLocalMuted);
+    }
+
+    function toggleMusicLocalMute() {
+      musicLocalMuted = !musicLocalMuted;
+      localStorage.setItem('dspeak_music_muted', musicLocalMuted ? '1' : '0');
+      updateMusicMuteBtn();
+      applyMusicOutputMute();
+      showToast(musicLocalMuted
+        ? 'Música silenciada só pra você — os outros continuam ouvindo normalmente.'
+        : 'Você voltou a ouvir a música da sala.');
+    }
+
+    function updateMusicMuteBtn() {
+      const btn = document.getElementById('music-mute-btn');
+      if (!btn) return;
+      btn.classList.toggle('is-muted', musicLocalMuted);
+      btn.title = musicLocalMuted ? 'Voltar a ouvir a música da sala' : 'Silenciar a música só pra mim';
+      btn.innerHTML = musicLocalMuted
+        ? '<svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>'
+        : '<svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>';
     }
 
     function applyMusicOutputMute() {
@@ -4620,9 +4733,13 @@
     function setMusicUnlockVisible(show) {
       const el = document.getElementById('music-unlock');
       const banner = document.getElementById('music-unlock-banner');
-      if (el) el.classList.toggle('visible', !!show);
-      if (banner) banner.classList.toggle('visible', !!show);
+      // Quem silenciou a música de propósito não precisa do aviso de "clique
+      // para ouvir" — ela escolheu não ouvir; o botão de som fica ali se mudar de ideia.
+      const visible = !!show && !musicLocalMuted;
+      if (el) el.classList.toggle('visible', visible);
+      if (banner) banner.classList.toggle('visible', visible);
     }
+    updateMusicMuteBtn(); // desenha o ícone certo (com/sem som) já na carga
 
     function setMusicCover(item) {
       const cover = document.getElementById('music-cover');
@@ -5631,6 +5748,258 @@
       });
     }
 
+    // ---------- SFU: transmissão de tela via SERVIDOR (adeus CPU estourada) ----------
+    // No modo antigo (mesh), quem transmitia codificava UM VÍDEO POR ESPECTADOR —
+    // 4 pessoas assistindo = 4 encodes simultâneos no PC do streamer. Agora o
+    // streamer manda UM único vídeo pro servidor (mediasoup na VPS) e o servidor
+    // replica pra cada espectador. Se o SFU estiver fora do ar por qualquer
+    // motivo, tudo aqui falha de forma controlada e o modo mesh antigo assume
+    // sozinho — nenhuma transmissão deixa de funcionar.
+    let sfuAvailable = false;
+    let mediasoupClientLib = null;   // biblioteca carregada sob demanda (só quando alguém transmite/assiste)
+    let sfuDevice = null;            // "aparelho" do mediasoup — guarda os codecs negociados com o router da sala
+    let sfuSendTransport = null;     // canal de SAÍDA (nossa tela indo pro servidor)
+    let sfuRecvTransport = null;     // canal de ENTRADA (telas dos outros vindo do servidor)
+    let sfuVideoProducer = null;
+    let sfuAudioProducer = null;
+    let sfuPublishing = false;       // estamos transmitindo nossa tela via SFU agora?
+    let sfuConsumersBySocket = {};   // socketId do streamer -> { consumers: [], stream }
+
+    socket.on('sfu-available', (v) => {
+      sfuAvailable = !!v;
+      console.log(`[SFU] Transmissão via servidor ${sfuAvailable ? 'DISPONÍVEL — telas custam um encode só' : 'indisponível — usando o modo mesh antigo'}.`);
+    });
+
+    // Pedido com resposta (ack) e timeout: se o servidor não responder em 8s,
+    // devolve erro em vez de deixar a transmissão pendurada esperando pra sempre.
+    function sfuRequest(event, data) {
+      return new Promise((resolve) => {
+        let done = false;
+        const timer = setTimeout(() => { if (!done) { done = true; resolve({ error: 'timeout' }); } }, 8000);
+        socket.emit(event, data || {}, (res) => {
+          if (!done) { done = true; clearTimeout(timer); resolve(res || {}); }
+        });
+      });
+    }
+
+    async function loadMediasoupClient() {
+      if (mediasoupClientLib) return mediasoupClientLib;
+      mediasoupClientLib = await import('https://cdn.jsdelivr.net/npm/mediasoup-client@3/+esm');
+      return mediasoupClientLib;
+    }
+
+    // Zera todo o estado SFU local (sair da sala, reconectar, trocar de sala).
+    function sfuResetLocal() {
+      try { if (sfuVideoProducer) sfuVideoProducer.close(); } catch (e) {}
+      try { if (sfuAudioProducer) sfuAudioProducer.close(); } catch (e) {}
+      sfuVideoProducer = null; sfuAudioProducer = null; sfuPublishing = false;
+      Object.values(sfuConsumersBySocket).forEach(entry => {
+        (entry.consumers || []).forEach(c => { try { c.close(); } catch (e) {} });
+      });
+      sfuConsumersBySocket = {};
+      try { if (sfuSendTransport) sfuSendTransport.close(); } catch (e) {}
+      try { if (sfuRecvTransport) sfuRecvTransport.close(); } catch (e) {}
+      sfuSendTransport = null; sfuRecvTransport = null;
+      sfuDevice = null;
+    }
+
+    async function sfuEnsureDevice() {
+      if (sfuDevice) return sfuDevice;
+      const caps = await sfuRequest('sfu-caps');
+      if (caps.error || !caps.rtpCapabilities) return null;
+      const lib = await loadMediasoupClient();
+      const device = new lib.Device();
+      await device.load({ routerRtpCapabilities: caps.rtpCapabilities });
+      sfuDevice = device;
+      return device;
+    }
+
+    async function sfuCreateTransport(direction) {
+      const res = await sfuRequest('sfu-create-transport', { direction });
+      if (res.error || !res.params) throw new Error('transporte SFU: ' + (res.error || 'sem params'));
+      const transport = direction === 'send'
+        ? sfuDevice.createSendTransport(res.params)
+        : sfuDevice.createRecvTransport(res.params);
+      transport.on('connect', ({ dtlsParameters }, callback, errback) => {
+        sfuRequest('sfu-connect-transport', { transportId: transport.id, dtlsParameters })
+          .then(r => r.error ? errback(new Error(r.error)) : callback());
+      });
+      if (direction === 'send') {
+        transport.on('produce', ({ kind, rtpParameters, appData }, callback, errback) => {
+          sfuRequest('sfu-produce', { transportId: transport.id, kind, rtpParameters, appData })
+            .then(r => (r.error || !r.id) ? errback(new Error(r.error || 'produce falhou')) : callback({ id: r.id }));
+        });
+      }
+      return transport;
+    }
+
+    // A faixa de áudio "da tela" que vale agora: se houver mais de uma no
+    // localStream (áudio do sistema + mixer de processo), a MAIS RECENTE ganha —
+    // mesma regra do slot único de áudio do modo mesh.
+    function sfuPickScreenAudioTrack() {
+      if (!localStream) return null;
+      const tracks = localStream.getAudioTracks();
+      return tracks.length ? tracks[tracks.length - 1] : null;
+    }
+
+    async function sfuEnsureScreenAudioProducer(track) {
+      if (!sfuPublishing || !sfuSendTransport || !track) return;
+      if (sfuAudioProducer && !sfuAudioProducer.closed) {
+        await sfuAudioProducer.replaceTrack({ track });
+        return;
+      }
+      sfuAudioProducer = await sfuSendTransport.produce({
+        track,
+        // Mesmo "modo música" que o SDP munging fazia no mesh: estéreo real,
+        // sem corte de silêncio (DTX), correção de erro e bitrate alto.
+        codecOptions: { opusStereo: true, opusDtx: false, opusFec: true, opusMaxAverageBitrate: 256000 },
+        appData: { type: 'screen-audio' }
+      });
+    }
+
+    // Publica (ou re-publica, após troca de janela) a tela atual no SFU.
+    async function sfuPublishScreen() {
+      if (!sfuAvailable || !localStream) return false;
+      try {
+        if (!(await sfuEnsureDevice())) return false;
+        if (!sfuSendTransport || sfuSendTransport.closed) sfuSendTransport = await sfuCreateTransport('send');
+
+        const videoTrack = localStream.getVideoTracks()[0];
+        if (!videoTrack) return false;
+        sfuPublishing = true;
+
+        if (sfuVideoProducer && !sfuVideoProducer.closed) {
+          // Troca de janela no meio da live: só troca o conteúdo, sem renegociar.
+          await sfuVideoProducer.replaceTrack({ track: videoTrack });
+        } else {
+          sfuVideoProducer = await sfuSendTransport.produce({
+            track: videoTrack,
+            encodings: [{ maxBitrate: STREAM_QUALITY_BITRATES[selectedStreamQuality] || STREAM_QUALITY_BITRATES.medium }],
+            appData: { type: 'screen-video' }
+          });
+        }
+
+        const audioTrack = sfuPickScreenAudioTrack();
+        if (audioTrack) await sfuEnsureScreenAudioProducer(audioTrack);
+
+        console.log('[SFU] Tela publicada no servidor — um encode só, não importa quantos assistam.');
+        return true;
+      } catch (e) {
+        console.error('[SFU] Falha ao publicar a tela — o modo mesh antigo assume:', e);
+        sfuPublishing = false;
+        return false;
+      }
+    }
+
+    // Troca de qualidade no meio da live: o producer de vídeo é recriado com o
+    // bitrate novo e a sala é avisada pra re-consumir (2s de "soluço" só pra
+    // quem assiste, nada cai).
+    async function sfuReproduceVideo() {
+      try {
+        const track = localStream && localStream.getVideoTracks()[0];
+        if (!track || !sfuSendTransport || sfuSendTransport.closed) return;
+        const old = sfuVideoProducer;
+        sfuVideoProducer = null;
+        if (old) {
+          socket.emit('sfu-close-producer', { producerId: old.id });
+          try { old.close(); } catch (e) {}
+        }
+        sfuVideoProducer = await sfuSendTransport.produce({
+          track,
+          encodings: [{ maxBitrate: STREAM_QUALITY_BITRATES[selectedStreamQuality] || STREAM_QUALITY_BITRATES.medium }],
+          appData: { type: 'screen-video' }
+        });
+        socket.emit('sfu-new-producer');
+      } catch (e) {
+        console.error('[SFU] Não consegui reaplicar a qualidade:', e);
+      }
+    }
+
+    function sfuStopPublishing() {
+      if (!sfuPublishing) return;
+      socket.emit('sfu-close-producers');
+      try { if (sfuVideoProducer) sfuVideoProducer.close(); } catch (e) {}
+      try { if (sfuAudioProducer) sfuAudioProducer.close(); } catch (e) {}
+      sfuVideoProducer = null; sfuAudioProducer = null; sfuPublishing = false;
+    }
+
+    // Assiste a transmissão de alguém via SFU. Retorna false pra cair no mesh.
+    async function sfuWatch(targetSocketId) {
+      if (!sfuAvailable) return false;
+      try {
+        if (!(await sfuEnsureDevice())) return false;
+        if (!sfuRecvTransport || sfuRecvTransport.closed) sfuRecvTransport = await sfuCreateTransport('recv');
+
+        const res = await sfuRequest('sfu-consume', {
+          producerSocketId: targetSocketId,
+          rtpCapabilities: sfuDevice.rtpCapabilities
+        });
+        if (res.error || !Array.isArray(res.consumers) || !res.consumers.length) {
+          // 'no-producers' = o streamer não publicou no SFU (cliente antigo ou
+          // fallback) — o chamador tenta o mesh.
+          return false;
+        }
+
+        // Re-consumo (ex: streamer trocou a qualidade): fecha o antigo primeiro.
+        sfuCloseConsumersFor(targetSocketId, { silent: true });
+
+        const stream = new MediaStream();
+        const entry = { consumers: [], stream };
+        for (const params of res.consumers) {
+          const consumer = await sfuRecvTransport.consume({
+            id: params.consumerId,
+            producerId: params.producerId,
+            kind: params.kind,
+            rtpParameters: params.rtpParameters
+          });
+          entry.consumers.push(consumer);
+          stream.addTrack(consumer.track);
+          sfuRequest('sfu-resume-consumer', { consumerId: params.consumerId });
+        }
+        sfuConsumersBySocket[targetSocketId] = entry;
+
+        // Marca como stream de tela pro roteador de áudio do mesh nunca confundir
+        // esse áudio com microfone.
+        knownScreenStreamIds.add(stream.id);
+        const usersInChannel = voiceChannelUsers[connectedVoiceChannel] || [];
+        const targetUser = usersInChannel.find(u => u.socketId === targetSocketId);
+        addScreenStream(targetUser ? targetUser.name : 'Amigo', stream, targetSocketId);
+        console.log(`[SFU] Assistindo ${targetSocketId} via servidor.`);
+        return true;
+      } catch (e) {
+        console.error('[SFU] Falha ao assistir via servidor — tentando o mesh:', e);
+        return false;
+      }
+    }
+
+    function sfuCloseConsumersFor(targetSocketId, opts) {
+      const entry = sfuConsumersBySocket[targetSocketId];
+      if (!entry) return;
+      (entry.consumers || []).forEach(c => { try { c.close(); } catch (e) {} });
+      delete sfuConsumersBySocket[targetSocketId];
+      if (!opts || !opts.silent) socket.emit('sfu-stop-consuming', { producerSocketId: targetSocketId });
+    }
+
+    // O streamer recriou o vídeo (troca de qualidade) — re-consome só o que mudou.
+    socket.on('sfu-producer-updated', (data) => {
+      const id = data && data.producerSocketId;
+      if (id && watchedStreams[id] && sfuConsumersBySocket[id]) sfuWatch(id);
+    });
+
+    // Reconectou (rede piscou ou o SERVIDOR REINICIOU num deploy): os transportes
+    // SFU antigos morreram junto. Limpa tudo e destrava o "Assistir" de quem a
+    // gente via pelo SFU — o sync-active-streams do rejoin reabre sozinho.
+    function sfuHandleReconnect() {
+      const watchedViaSfu = Object.keys(sfuConsumersBySocket);
+      watchedViaSfu.forEach(id => {
+        watchedStreams[id] = false;
+        const key = Object.keys(activeStreams).find(k => activeStreams[k].socketId === id);
+        if (key) delete activeStreams[key];
+      });
+      sfuResetLocal();
+      if (watchedViaSfu.length) renderStreamsContainer();
+    }
+
     async function startScreenShare() {
       let width = selectedResolution === '1440' ? 2560 : (selectedResolution === '1080' ? 1920 : 1280);
       let height = selectedResolution === '1440' ? 1440 : (selectedResolution === '1080' ? 1080 : 720);
@@ -5763,6 +6132,13 @@
         }
         
         addScreenStream(username, localStream, socket.id);
+
+        // SFU primeiro: publica UM encode no servidor. Só depois avisa a sala que
+        // a live começou — assim quem clicar em "Assistir" já encontra a
+        // transmissão pronta no servidor. Se falhar, o mesh antigo assume.
+        if (sfuAvailable) {
+          try { await sfuPublishScreen(); } catch (e) { console.error('[SFU] publicar falhou:', e); }
+        }
         socket.emit('start-streaming', connectedVoiceChannel);
 
         const shareBtn = document.getElementById('stage-share-btn');
@@ -5781,6 +6157,10 @@
     }
 
     function stopScreenShare() {
+      // Encerra a publicação no SFU (se era por lá) — o servidor avisa quem
+      // estava assistindo e fecha os consumers de todo mundo.
+      sfuStopPublishing();
+
       // Remove só as NOSSAS faixas de tela de cada conexão (renegocia automaticamente
       // via onnegotiationneeded). Não fecha a conexão: ela pode ainda estar sendo usada
       // para a voz normal ou para RECEBER a tela de outra pessoa que continua transmitindo.
@@ -5929,6 +6309,7 @@
     // configurações, reaplica o novo bitrate na hora, sem precisar reiniciar a transmissão.
     function applyStreamQualityToActiveShare() {
       if (!localStream) return;
+      if (sfuPublishing) { sfuReproduceVideo(); return; }
       const videoTrackIds = localStream.getVideoTracks().map(t => t.id);
       Object.values(peerConnections).forEach(pc => {
         pc.getSenders().forEach(sender => {
@@ -5965,6 +6346,11 @@
       if (watchingPeerIds.length > 0) {
         console.log(`[ProcessAudio] Avisando ${watchingPeerIds.length} conexão(ões) já aberta(s) sobre a faixa de áudio de processo.`);
         watchingPeerIds.forEach(id => addScreenTracksToPeer(peerConnections[id]));
+      }
+      // Transmitindo via SFU: o áudio de processo também vai por lá (troca o
+      // conteúdo do producer de áudio, ou cria um se ainda não tinha).
+      if (sfuPublishing) {
+        sfuEnsureScreenAudioProducer(track).catch(e => console.warn('[SFU] áudio de processo:', e));
       }
       showToast('Áudio do programa conectado.');
       return true;
@@ -6325,6 +6711,7 @@
     socket.on('user-stopped-streaming', (targetSocketId) => {
       // Não fecha a conexão aqui: se nós ainda estivermos transmitindo para essa
       // pessoa, a ligação (pc) precisa continuar aberta para o nosso lado funcionar.
+      sfuCloseConsumersFor(targetSocketId, { silent: true });
       const streamerName = liveStreamers[targetSocketId];
       delete liveStreamers[targetSocketId];
       delete watchedStreams[targetSocketId];
@@ -6347,7 +6734,13 @@
     function closeWatchingStream(userKey, socketId) {
       console.log(`[Stream] fechando transmissão de ${userKey} (socketId=${socketId})`);
       delete activeStreams[userKey];
-      if (socketId) {
+      if (socketId && sfuConsumersBySocket[socketId]) {
+        // Assistíamos via SFU: basta fechar nossos consumers no servidor — a voz
+        // com essa pessoa (mesh) nem é tocada.
+        watchedStreams[socketId] = false;
+        clearTimeout(watchStreamTimeouts[socketId]);
+        sfuCloseConsumersFor(socketId);
+      } else if (socketId) {
         watchedStreams[socketId] = false;
         clearTimeout(watchStreamTimeouts[socketId]);
         // Reseta a ligação inteira com essa pessoa (fecha e recria do zero) — é
