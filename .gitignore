@@ -9,6 +9,10 @@ messages.json
 dm-messages.json
 users.json
 uploads/
+music.json
+
+# Instalador do app desktop (106MB — sobe pra VPS via scp, não pelo git)
+downloads/
 
 # Ambiente / segredos
 .env

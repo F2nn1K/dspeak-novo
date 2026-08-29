@@ -19,10 +19,41 @@ const io = new Server(server, {
   pingInterval: 25000
 });
 
-app.use(express.static(path.join(__dirname, 'public')));
+// index: false — sem isso, o express.static entregava o index.html direto na
+// raiz e as rotas abaixo (landing page x app) nunca rodavam.
+app.use(express.static(path.join(__dirname, 'public'), { index: false }));
 
+// A raiz agora é o SITE de apresentação (baixar o app, conhecer o DSpeak).
+// Exceção: o app desktop (Electron) aponta pra raiz desde sempre — detecta pelo
+// user-agent e manda direto pro app, pra ninguém precisar baixar um .exe novo.
 app.get('/', (req, res) => {
+  if (/Electron/i.test(req.headers['user-agent'] || '')) return res.redirect('/app');
+  res.sendFile(path.join(__dirname, 'public', 'site.html'));
+});
+
+// O aplicativo de verdade (a tela de login já faz parte dele).
+app.get('/app', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// Atalho amigável: /login e /download levam pros lugares certos.
+app.get('/login', (req, res) => res.redirect('/app'));
+app.get('/download', (req, res) => res.redirect('/download/windows'));
+
+// Entrega o instalador do Windows mais recente que estiver na pasta downloads/
+// (fica fora do git — sobe direto pra VPS via scp quando sair versão nova).
+const DOWNLOADS_DIR = process.env.DOWNLOADS_DIR || path.join(__dirname, 'downloads');
+app.get('/download/windows', (req, res) => {
+  try {
+    const newest = fs.readdirSync(DOWNLOADS_DIR)
+      .filter(f => f.toLowerCase().endsWith('.exe'))
+      .map(f => ({ f, m: fs.statSync(path.join(DOWNLOADS_DIR, f)).mtimeMs }))
+      .sort((a, b) => b.m - a.m)[0];
+    if (!newest) throw new Error('sem instalador');
+    res.download(path.join(DOWNLOADS_DIR, newest.f), 'DSpeak-Setup.exe');
+  } catch (e) {
+    res.status(404).send('Instalador ainda não disponível — tenta de novo daqui a pouco.');
+  }
 });
 
 // ---------- Credenciais do servidor TURN (proxy) ----------
