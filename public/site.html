@@ -10,6 +10,13 @@
   <meta property="og:description" content="Converse por voz, compartilhe tela, ouça música junto e crie seu próprio servidor. Grátis e leve.">
   <meta property="og:image" content="https://dspeak.com.br/mascote.png">
   <meta property="og:url" content="https://dspeak.com.br/">
+  <script>
+    // Link de convite antigo/compartilhado aponta pra raiz (ex: dspeak.com.br/?invite=X).
+    // A raiz agora é o site — manda direto pro app com o convite intacto.
+    if (new URLSearchParams(location.search).has('invite')) {
+      location.replace('/app' + location.search);
+    }
+  </script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     :root {
