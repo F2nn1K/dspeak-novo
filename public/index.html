@@ -1919,7 +1919,7 @@
 
     function roleManageBtnHtml(u, isSelf) {
       if (isSelf) return '';
-      if (myRole !== 'owner' && myRole !== 'moderator') return '';
+      if (myRole !== 'owner' && myRole !== 'moderator' && !canManageActiveServer()) return '';
       if (u.role === 'owner' && myRole !== 'owner') return ''; // só o Owner mexe em outro Owner
       const safeName = String(u.name).replace(/'/g, "\\'");
       return `<button class="role-manage-btn" title="Gerenciar" onclick="event.stopPropagation(); openRoleModal('${safeName}', '${u.socketId}', '${u.role || 'guest'}')">⚙</button>`;
@@ -1934,10 +1934,21 @@
       return !!(srv && srv.isOwner);
     }
 
-    // Só o dono DESSE servidor pode criar/renomear/excluir canais nele — some com os
-    // botões pros outros.
+    // Moderador DO servidor atual — promovido pelo dono, só vale nesse servidor.
+    function isModeratorOfActiveServer() {
+      const srv = servers.find(s => s.id === activeServerId);
+      return !!(srv && srv.isModerator);
+    }
+
+    // Quem pode montar o servidor atual: o dono ou um Moderador dele.
+    function canManageActiveServer() {
+      return isOwnerOfActiveServer() || isModeratorOfActiveServer();
+    }
+
+    // Dono e Moderadores DESSE servidor podem criar/renomear/excluir canais nele —
+    // some com os botões pros outros.
     function applyRolePermissionsToUI() {
-      const canManageServer = isOwnerOfActiveServer();
+      const canManageServer = canManageActiveServer();
       const addTextBtn = document.getElementById('add-text-channel-btn');
       const addVoiceBtn = document.getElementById('add-voice-channel-btn');
       if (addTextBtn) addTextBtn.style.display = canManageServer ? 'inline' : 'none';
@@ -2866,8 +2877,8 @@
     }
 
     function openCreateChannel(type) {
-      if (!isOwnerOfActiveServer()) {
-        showToast('Só o dono desse servidor pode criar ou alterar canais.');
+      if (!canManageActiveServer()) {
+        showToast('Só o dono ou um Moderador desse servidor pode criar ou alterar canais.');
         return;
       }
       document.getElementById('new-channel-type').value = type;
@@ -2901,7 +2912,7 @@
     let renameChannelTargetType = 'text';
 
     function openRenameChannel(channelId) {
-      if (!isOwnerOfActiveServer()) { showToast('Só o dono desse servidor pode alterar canais.'); return; }
+      if (!canManageActiveServer()) { showToast('Só o dono ou um Moderador desse servidor pode alterar canais.'); return; }
       const srv = servers.find(s => s.id === activeServerId);
       const ch = srv && srv.channels.find(c => c.id === channelId);
       if (!ch) return;
@@ -2947,7 +2958,7 @@
     }
 
     function deleteChannel(channelId) {
-      if (!isOwnerOfActiveServer()) { showToast('Só o dono desse servidor pode alterar canais.'); return; }
+      if (!canManageActiveServer()) { showToast('Só o dono ou um Moderador desse servidor pode alterar canais.'); return; }
       const srv = servers.find(s => s.id === activeServerId);
       const ch = srv && srv.channels.find(c => c.id === channelId);
       if (!ch) return;
@@ -2985,13 +2996,15 @@
 
     function toggleServerMenu(e) {
       if (e) e.stopPropagation();
-      if (!isOwnerOfActiveServer()) {
-        showToast('Só o dono desse servidor pode criar ou alterar canais.');
+      if (!canManageActiveServer()) {
+        showToast('Só o dono ou um Moderador desse servidor pode criar ou alterar canais.');
         return;
       }
       const srv = servers.find(s => s.id === activeServerId);
       document.getElementById('invite-people-menu-item').style.display = (srv && srv.inviteCode) ? 'flex' : 'none';
-      document.getElementById('edit-server-menu-item').style.display = (srv && srv.id !== 'dspeak') ? 'flex' : 'none';
+      // Editar o servidor em si (nome/senha/ícone) continua sendo só do dono — o
+      // Moderador cuida das salas, não das configurações do servidor.
+      document.getElementById('edit-server-menu-item').style.display = (srv && srv.id !== 'dspeak' && srv.isOwner) ? 'flex' : 'none';
       const menu = document.getElementById('server-menu');
       menu.style.display = menu.style.display === 'block' ? 'none' : 'block';
     }
@@ -3155,11 +3168,10 @@
       tempServerIconUrl = '';
       updateServerIconPreviews();
 
-      // Criar servidor novo é restrito ao Owner global — quem não for, só vê a aba
-      // de entrar com convite (sem isso, virava bagunça de servidor toda hora).
-      const canCreate = myRole === 'owner';
-      document.getElementById('server-tab-create').style.display = canCreate ? 'block' : 'none';
-      switchServerModalTab(canCreate ? 'create' : 'join');
+      // Qualquer pessoa pode criar um servidor novo — quem cria vira o dono dele
+      // (com poder de promover Moderadores lá dentro).
+      document.getElementById('server-tab-create').style.display = 'block';
+      switchServerModalTab('create');
       openModal('server-join-create-modal');
     }
 
@@ -3326,8 +3338,8 @@
             ${isVoice ? channelOccupancyHtml(ch, occupantCount) : ''}
             ${unreadBadgeHtml(ch)}
             <div class="channel-actions">
-              ${(isOwnerOfActiveServer() && !ch.locked) ? `<button class="channel-action-btn" title="Renomear canal" onclick="event.stopPropagation(); openRenameChannel('${ch.id}')">✏️</button>` : ''}
-              ${(isOwnerOfActiveServer() && !ch.undeletable) ? `<button class="channel-action-btn delete" title="Excluir canal" onclick="event.stopPropagation(); deleteChannel('${ch.id}')">🗑</button>` : ''}
+              ${(canManageActiveServer() && !ch.locked) ? `<button class="channel-action-btn" title="Renomear canal" onclick="event.stopPropagation(); openRenameChannel('${ch.id}')">✏️</button>` : ''}
+              ${(canManageActiveServer() && !ch.undeletable) ? `<button class="channel-action-btn delete" title="Excluir canal" onclick="event.stopPropagation(); deleteChannel('${ch.id}')">🗑</button>` : ''}
             </div>
           </div>
         `;
@@ -3355,7 +3367,7 @@
         };
 
         // Arrastar-e-soltar: soltar alguém em cima de uma sala de voz puxa a pessoa pra lá.
-        if (isVoice && (myRole === 'owner' || myRole === 'moderator')) {
+        if (isVoice && (myRole === 'owner' || myRole === 'moderator' || canManageActiveServer())) {
           div.ondragover = (e) => {
             e.preventDefault();
             e.dataTransfer.dropEffect = 'move';
@@ -3393,7 +3405,7 @@
 
               // Arrastar-e-soltar: Owner/Mod pode segurar o nome de alguém e soltar
               // em cima de outra sala de voz na lista, pra puxar a pessoa pra lá.
-              const canDragUser = (myRole === 'owner' || myRole === 'moderator') && !isSelf && (u.role !== 'owner' || myRole === 'owner');
+              const canDragUser = (myRole === 'owner' || myRole === 'moderator' || canManageActiveServer()) && !isSelf && (u.role !== 'owner' || myRole === 'owner');
               if (canDragUser) {
                 sub.draggable = true;
                 sub.ondragstart = (e) => {
@@ -4021,8 +4033,33 @@
         });
       }
 
+      // Dono do servidor atual promove/rebaixa Moderadores DELE (vale só aqui
+      // dentro): Moderador pode criar/alterar salas, puxar e expulsar da voz.
+      const activeSrv = servers.find(s => s.id === activeServerId);
+      if (activeSrv && isOwnerOfActiveServer()) {
+        const targetKey = String(targetUsername).toLowerCase();
+        const isModHere = (activeSrv.moderators || []).includes(targetKey);
+        const modBtn = document.createElement('button');
+        modBtn.className = 'role-option-btn';
+        modBtn.textContent = isModHere
+          ? '⬇ Remover Moderador deste servidor'
+          : '⭐ Promover a Moderador deste servidor';
+        modBtn.onclick = () => {
+          socket.emit('set-server-moderator', {
+            serverId: activeServerId,
+            targetUsername,
+            makeModerator: !isModHere
+          });
+          showToast(isModHere
+            ? `${targetUsername} não é mais Moderador deste servidor.`
+            : `${targetUsername} agora é Moderador deste servidor!`);
+          closeModal('role-modal');
+        };
+        optionsWrap.appendChild(modBtn);
+      }
+
       // Mod não pode puxar um Owner — só o próprio Owner mexe em outro Owner.
-      const canPull = connectedVoiceChannel && (myRole === 'owner' || (myRole === 'moderator' && targetRole !== 'owner'));
+      const canPull = connectedVoiceChannel && (myRole === 'owner' || ((myRole === 'moderator' || canManageActiveServer()) && targetRole !== 'owner'));
       if (canPull) {
         const pullBtn = document.createElement('button');
         pullBtn.className = 'role-pull-btn';
@@ -4034,7 +4071,7 @@
       // Item 4 (pedido do usuário): Owner/Moderador conseguem expulsar alguém da
       // sala de voz em que está agora — mesma regra de quem pode mexer em quem do
       // "Puxar" acima (Moderador não expulsa Owner).
-      const canKick = myRole === 'owner' || (myRole === 'moderator' && targetRole !== 'owner');
+      const canKick = myRole === 'owner' || ((myRole === 'moderator' || canManageActiveServer()) && targetRole !== 'owner');
       if (canKick) {
         const kickBtn = document.createElement('button');
         kickBtn.className = 'role-pull-btn';
@@ -4066,7 +4103,7 @@
     // Puxa alguém pra uma sala de voz específica. Usada tanto pelo botão "Puxar para
     // esta sala" no menu de gerenciar quanto por soltar (drag-and-drop) em cima de uma sala.
     function pullUserToChannel(targetSocketId, channelId) {
-      if (myRole !== 'owner' && myRole !== 'moderator') return;
+      if (myRole !== 'owner' && myRole !== 'moderator' && !canManageActiveServer()) return;
       if (!targetSocketId || !channelId) return;
       socket.emit('pull-user-to-room', { targetSocketId, channelId });
     }
@@ -7050,7 +7087,7 @@
       // Mensagens antigas (sem id, de antes do recurso) não têm ações.
       if (!data.id) return '';
       const isMine = data.user === username;
-      const canDelete = isMine || myRole === 'owner' || myRole === 'moderator';
+      const canDelete = isMine || myRole === 'owner' || myRole === 'moderator' || canManageActiveServer();
       return `
         <div class="chat-msg-actions">
           <button class="chat-msg-action-btn" title="Reagir" onclick="openReactionPicker(event, '${data.id}')">😊</button>

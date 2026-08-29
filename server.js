@@ -602,6 +602,26 @@ function isOwnerOfServer(socket, srv) {
   return srv.ownerUsername === keyOf(socket.username);
 }
 
+// Moderador DE UM servidor específico: promovido pelo dono daquele servidor, vale
+// só lá dentro (diferente do 'moderator' global antigo, que valia em tudo).
+function isModeratorOfServer(socket, srv) {
+  if (!srv || !socket.username) return false;
+  return (srv.moderators || []).includes(keyOf(socket.username));
+}
+
+// Quem pode montar o servidor (criar/renomear/excluir salas, moderar voz e chat):
+// o dono dele ou um Moderador promovido por ele.
+function canManageServer(socket, srv) {
+  return isOwnerOfServer(socket, srv) || isModeratorOfServer(socket, srv);
+}
+
+// Acha o servidor a que um canal pertence (pra checar permissão por servidor).
+function serverOfChannel(channelId) {
+  const ch = channels.find(c => c.id === channelId);
+  if (!ch) return null;
+  return dspeakServers.find(s => s.id === ch.serverId) || null;
+}
+
 // Manda pro socket a lista dos servidores dos quais ele é membro (nunca inclui o
 // hash da senha — só se TEM senha ou não).
 // Nunca manda o hash da senha de uma sala de voz pro cliente — só se ELA TEM senha
@@ -622,7 +642,9 @@ function sendMyServers(socket) {
       iconUrl: srv.iconUrl || null,
       hasPassword: !!srv.passwordHash,
       isOwner: isOwnerOfServer(socket, srv),
-      inviteCode: isOwnerOfServer(socket, srv) ? srv.inviteCode : undefined, // só o dono vê/reusa o código
+      isModerator: isModeratorOfServer(socket, srv),
+      moderators: srv.moderators || [],
+      inviteCode: canManageServer(socket, srv) ? srv.inviteCode : undefined, // dono e mods veem o código de convite
       channels: channels.filter(c => c.serverId === srv.id).map(sanitizeChannelForClient)
     }));
   socket.emit('my-servers', mine);
@@ -1291,7 +1313,8 @@ io.on('connection', (socket) => {
     const entry = findMessageById(data.room, data.messageId);
     if (!entry) return;
     const isAuthor = keyOf(entry.user) === socket.usernameKey;
-    const isMod = socket.role === 'owner' || socket.role === 'moderator';
+    const isMod = socket.role === 'owner' || socket.role === 'moderator'
+      || canManageServer(socket, serverOfChannel(data.room));
     if (!isAuthor && !isMod) return;
     messages[data.room] = messages[data.room].filter(m => m.id !== entry.id);
     saveMessages();
@@ -1394,11 +1417,11 @@ io.on('connection', (socket) => {
     }
   }
 
-  // ---------- Criar / renomear / excluir canais (só o dono DAQUELE servidor pode) ----------
+  // ---------- Criar / renomear / excluir canais (dono OU Moderador daquele servidor) ----------
   socket.on('create-channel', (data) => {
     const serverId = data && data.serverId;
     const srv = dspeakServers.find(s => s.id === serverId);
-    if (!srv || !isOwnerOfServer(socket, srv)) return;
+    if (!srv || !canManageServer(socket, srv)) return;
     const name = String(data && data.name || '').trim();
     const type = data && data.type;
     if (!name || (type !== 'text' && type !== 'voice')) return;
@@ -1425,7 +1448,7 @@ io.on('connection', (socket) => {
     const ch = channels.find(c => c.id === channelId);
     if (!ch) return;
     const srv = dspeakServers.find(s => s.id === ch.serverId);
-    if (!isOwnerOfServer(socket, srv)) return;
+    if (!canManageServer(socket, srv)) return;
 
     const newName = String(data && data.newName || '').trim();
     if (newName && !ch.locked) ch.name = newName; // canais travados (ex: "geral") não podem ser renomeados
@@ -1454,7 +1477,7 @@ io.on('connection', (socket) => {
     const ch = channels.find(c => c.id === channelId);
     if (!ch || ch.undeletable) return; // "geral" e "Lobby" nunca podem ser excluídos
     const srv = dspeakServers.find(s => s.id === ch.serverId);
-    if (!isOwnerOfServer(socket, srv)) return;
+    if (!canManageServer(socket, srv)) return;
     if (channels.filter(c => c.serverId === ch.serverId).length <= 1) return;
 
     channels = channels.filter(c => c.id !== channelId);
@@ -1464,15 +1487,10 @@ io.on('connection', (socket) => {
     broadcastChannelsSync(ch.serverId);
   });
 
-  // ---------- Criar um servidor novo (só o Owner GLOBAL pode; o criador vira Owner
-  // DELE também, mas quem pode criar continua restrito, pra não virar bagunça de
-  // servidor toda hora) ----------
+  // ---------- Criar um servidor novo (qualquer pessoa logada pode; quem cria vira
+  // o dono DELE — com poder de promover Moderadores lá dentro) ----------
   socket.on('create-server', (data) => {
     if (!socket.username) return;
-    if (socket.role !== 'owner') {
-      socket.emit('server-create-failed', { message: 'Só o Owner pode criar servidores novos.' });
-      return;
-    }
     const name = String(data && data.name || '').trim().slice(0, 60);
     if (!name) { socket.emit('server-create-failed', { message: 'Digite um nome pra esse servidor.' }); return; }
     const password = data && data.password ? String(data.password) : '';
@@ -1494,7 +1512,8 @@ io.on('connection', (socket) => {
       ownerUsername: socket.usernameKey,
       passwordHash: password ? hashServerPassword(password) : null,
       inviteCode: crypto.randomBytes(8).toString('hex'),
-      members: [socket.usernameKey]
+      members: [socket.usernameKey],
+      moderators: []
     };
     dspeakServers.push(srv);
     saveServers();
@@ -1584,6 +1603,34 @@ io.on('connection', (socket) => {
     socket.emit('server-joined', { serverId: srv.id });
   });
 
+  // ---------- Moderador POR SERVIDOR ----------
+  // O dono de um servidor promove/rebaixa Moderadores dele. Moderador pode criar e
+  // mexer nas salas, puxar/expulsar da voz e apagar mensagens — SÓ naquele servidor.
+  // Ele não promove ninguém nem mexe nas configurações do servidor em si.
+  socket.on('set-server-moderator', (data) => {
+    if (!socket.username || !data) return;
+    const srv = dspeakServers.find(s => s.id === data.serverId);
+    if (!srv || !isOwnerOfServer(socket, srv)) return;
+
+    const targetKey = keyOf(String(data.targetUsername || ''));
+    if (!targetKey || targetKey === socket.usernameKey) return;
+    if (!isMemberOfServer(srv, targetKey)) return; // só membro daquele servidor
+    if (srv.ownerUsername === targetKey) return;   // dono não vira mod de si mesmo
+
+    srv.moderators = srv.moderators || [];
+    const already = srv.moderators.includes(targetKey);
+    if (data.makeModerator && !already) srv.moderators.push(targetKey);
+    else if (!data.makeModerator && already) srv.moderators = srv.moderators.filter(k => k !== targetKey);
+    else return; // nada mudou
+
+    saveServers();
+    // Reenvia a lista de servidores pra todos os membros — o alvo ganha/perde os
+    // botões na hora, e o resto vê a lista de mods atualizada.
+    for (const [, s] of io.sockets.sockets) {
+      if (s.username && isMemberOfServer(srv, s.username)) sendMyServers(s);
+    }
+  });
+
   // ---------- Gestão de cargos ----------
   // Só o Owner pode dar cargos agora (member / moderator / owner).
   socket.on('assign-role', (data) => {
@@ -1611,14 +1658,17 @@ io.on('connection', (socket) => {
     });
   });
 
-  // Owner/Moderador "puxam" alguém pra sala de voz em que estão agora.
+  // Owner/Moderador global — ou dono/Moderador DO servidor da sala — "puxam"
+  // alguém pra sala de voz em que estão agora.
   socket.on('pull-user-to-room', (data) => {
-    if (socket.role !== 'owner' && socket.role !== 'moderator') return;
     const targetSocketId = data && data.targetSocketId;
     const channelId = data && data.channelId;
+    const isGlobalMod = socket.role === 'owner' || socket.role === 'moderator';
+    const srvOfRoom = serverOfChannel(channelId);
+    if (!isGlobalMod && !canManageServer(socket, srvOfRoom)) return;
     const targetSocket = io.sockets.sockets.get(targetSocketId);
     if (!targetSocket) return;
-    // Moderador não pode puxar um Owner — só o próprio Owner mexe em outro Owner.
+    // Ninguém abaixo do Owner global mexe num Owner global.
     if (targetSocket.role === 'owner' && socket.role !== 'owner') return;
     targetSocket.emit('force-join-voice', { channelId });
   });
@@ -1626,11 +1676,18 @@ io.on('connection', (socket) => {
   // Item 4: expulsa alguém da sala de voz em que está agora (não é um banimento do
   // servidor inteiro — só sai da sala de voz, pode entrar de novo se quiser).
   socket.on('kick-user-from-voice', (data) => {
-    if (socket.role !== 'owner' && socket.role !== 'moderator') return;
     const targetSocketId = data && data.targetSocketId;
     const targetSocket = io.sockets.sockets.get(targetSocketId);
     if (!targetSocket) return;
-    // Moderador não pode expulsar um Owner — só o próprio Owner mexe em outro Owner.
+    // Permissão: Owner/Moderador global, ou dono/Moderador do servidor da sala em
+    // que o alvo está agora.
+    const isGlobalMod = socket.role === 'owner' || socket.role === 'moderator';
+    if (!isGlobalMod) {
+      const targetChannelId = Object.keys(voiceUsers).find(chId =>
+        voiceUsers[chId].some(u => u.socketId === targetSocketId));
+      if (!canManageServer(socket, serverOfChannel(targetChannelId))) return;
+    }
+    // Ninguém abaixo do Owner global mexe num Owner global.
     if (targetSocket.role === 'owner' && socket.role !== 'owner') return;
 
     let kicked = false;
