@@ -43,6 +43,11 @@ app.get('/download', (req, res) => res.redirect('/download/windows'));
 // Entrega o instalador do Windows mais recente que estiver na pasta downloads/
 // (fica fora do git — sobe direto pra VPS via scp quando sair versão nova).
 const DOWNLOADS_DIR = process.env.DOWNLOADS_DIR || path.join(__dirname, 'downloads');
+
+// Atualização automática do app desktop (electron-updater): o app instalado
+// consulta /updates/latest.yml pra saber se saiu versão nova e baixa o .exe
+// daqui mesmo — a mesma pasta do botão de download do site.
+app.use('/updates', express.static(DOWNLOADS_DIR));
 app.get('/download/windows', (req, res) => {
   try {
     const newest = fs.readdirSync(DOWNLOADS_DIR)
