@@ -939,6 +939,9 @@
         <button class="grid-btn" id="share-btn" title="Transmitir Tela" disabled onclick="toggleScreenShare()">
           <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
         </button>
+        <button class="grid-btn" id="deck-music-btn" title="Ouvir junto (YouTube / Spotify)" disabled onclick="toggleMusicPanel()">
+          <svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+        </button>
         <button class="grid-btn" id="settings-btn" title="Central de Configurações" onclick="openSettingsModal('profile')">
           <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l-.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l-.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06-.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
         </button>
@@ -4121,8 +4124,9 @@
         const canShareScreen = connectedVoiceChannel !== WAITING_VOICE_ROOM;
         document.getElementById('share-btn').disabled = !canShareScreen;
         document.getElementById('stage-share-btn').disabled = !canShareScreen;
-        const musicBtn = document.getElementById('stage-music-btn');
-        if (musicBtn) musicBtn.disabled = !canShareScreen;
+        [document.getElementById('stage-music-btn'), document.getElementById('deck-music-btn')].forEach(b => {
+          if (b) b.disabled = !canShareScreen;
+        });
       }
       renderChannels();
       renderStageUsers();
@@ -4197,11 +4201,11 @@
       document.getElementById('share-btn').disabled = !canShareScreen;
       document.getElementById('stage-share-btn').disabled = !canShareScreen;
       document.getElementById('stage-share-btn').title = canShareScreen ? 'Transmitir Tela' : 'Transmissão de tela não disponível aqui';
-      const musicBtn = document.getElementById('stage-music-btn');
-      if (musicBtn) {
+      [document.getElementById('stage-music-btn'), document.getElementById('deck-music-btn')].forEach(musicBtn => {
+        if (!musicBtn) return;
         musicBtn.disabled = !canShareScreen;
         musicBtn.title = canShareScreen ? 'Ouvir junto (YouTube / Spotify)' : 'Ouvir junto não disponível aqui';
-      }
+      });
 
       document.getElementById('voice-connection-panel').style.display = 'flex';
       document.getElementById('voice-status-channel-name').textContent = channel.name;
@@ -4245,6 +4249,8 @@
       document.getElementById('mic-btn').disabled = true;
       document.getElementById('deafen-btn').disabled = true;
       document.getElementById('share-btn').disabled = true;
+      const deckMusicBtn = document.getElementById('deck-music-btn');
+      if (deckMusicBtn) deckMusicBtn.disabled = true;
       document.getElementById('voice-connection-panel').style.display = 'none';
       if (localStream) stopScreenShare();
 
