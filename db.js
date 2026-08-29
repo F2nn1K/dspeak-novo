@@ -5,6 +5,10 @@ const { Pool } = require('pg');
 const DATABASE_URL = process.env.DATABASE_URL || '';
 const enabled = !!DATABASE_URL;
 
+// Banco na própria máquina (localhost/127.0.0.1) não usa SSL — o Postgres local
+// nem aceita. Banco remoto (Supabase etc.) continua com SSL como sempre foi.
+const isLocalDb = /@(localhost|127\.0\.0\.1)[:/]/.test(DATABASE_URL);
+
 let pool = null;
 const pending = new Map(); // key -> timeout
 const latest = new Map(); // key -> value a gravar
@@ -14,7 +18,7 @@ function getPool() {
   if (!pool) {
     pool = new Pool({
       connectionString: DATABASE_URL,
-      ssl: { rejectUnauthorized: false },
+      ssl: isLocalDb ? false : { rejectUnauthorized: false },
       max: 8,
       idleTimeoutMillis: 20000,
       connectionTimeoutMillis: 20000
