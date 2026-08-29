@@ -584,16 +584,18 @@ saveChannels();
 // quem cria) e sempre tem um código de convite único pra gerar o link.
 const SERVERS_FILE = path.join(DATA_DIR, 'servers.json');
 
-// O servidor 'dspeak' padrão sempre existiu implicitamente — todo mundo é membro dele
-// automaticamente (comportamento de sempre, sem convite/senha), e ele usa o sistema de
-// Owner global já existente (roles.json), não um dono próprio.
+// O servidor 'dspeak' padrão usa o sistema de Owner global (roles.json), não um dono
+// próprio. Desde a mudança "estilo Discord", ele NÃO aceita mais todo mundo
+// automaticamente: quem já tinha conta foi migrado pra lista de membros uma única vez
+// (ver boot()), e conta nova só entra por convite, como qualquer outro servidor.
 const DEFAULT_SERVER = {
   id: 'dspeak',
   name: 'DSPEAK SERVER',
   ownerUsername: null, // null = usa o Owner global (roles.json), não um dono próprio
   passwordHash: null,
-  inviteCode: null, // servidor padrão não precisa de convite — todo mundo já é membro
-  members: [] // vazio = todo mundo é considerado membro automaticamente (ver isMemberOfServer)
+  inviteCode: null, // gerado no boot se ainda não existir
+  members: [],
+  membersMigrated: false // vira true depois da migração única das contas antigas
 };
 
 let dspeakServers = [DEFAULT_SERVER];
@@ -635,9 +637,12 @@ function verifyServerPassword(plain, stored) {
   }
 }
 
+// Igual ao Discord agora: NINGUÉM é membro automático de servidor nenhum — nem
+// do DSPEAK SERVER padrão. Quem já tinha conta antes dessa mudança foi migrado
+// pra lista de membros dele no boot (ver boot()); cadastro novo começa sem
+// servidor nenhum e só entra com convite (ou criando o próprio).
 function isMemberOfServer(srv, username) {
   if (!srv) return false;
-  if (srv.id === 'dspeak') return true; // servidor padrão: todo mundo é membro
   const key = keyOf(username);
   return srv.ownerUsername === key || (srv.members || []).includes(key);
 }
@@ -1281,6 +1286,10 @@ io.on('connection', (socket) => {
   });
 
   socket.on('join-room', (roomId) => {
+    // Só entra na "sala" do socket.io (por onde as mensagens ao vivo circulam)
+    // quem é membro do servidor daquele canal.
+    const srv = serverOfChannel(roomId);
+    if (!isMemberOfServer(srv, socket.username)) return;
     socket.join(roomId);
   });
 
@@ -1441,6 +1450,10 @@ io.on('connection', (socket) => {
   // entra ou troca de canal — é assim que o chat "individual por sala" sobrevive
   // a atualizações de página e é o mesmo pra todo mundo.
   socket.on('get-channel-history', (channelId) => {
+    // Histórico só pra membro do servidor dono do canal — sem isso, qualquer
+    // conta nova conseguiria puxar as conversas do 'geral' sem ter convite.
+    const srv = serverOfChannel(channelId);
+    if (!isMemberOfServer(srv, socket.username)) return;
     pruneChannelMessages(channelId);
     socket.emit('channel-history', { room: channelId, messages: messages[channelId] || [] });
   });
@@ -1790,6 +1803,9 @@ io.on('connection', (socket) => {
       sfu.cleanupSocket(socket.id);
       sfu.closeRouterIfUnused(oldChannel);
     }
+
+    // Voz também é só pra membro do servidor daquele canal.
+    if (!isMemberOfServer(serverOfChannel(channelId), socket.username || username)) return;
 
     if (!voiceUsers[channelId]) voiceUsers[channelId] = [];
 
@@ -2170,6 +2186,23 @@ async function boot() {
 
     pruneAllMessages();
     pruneAllDms();
+
+    // Migração única "estilo Discord": todo mundo que JÁ tinha conta antes dessa
+    // mudança vira membro de verdade do DSPEAK SERVER (pra ninguém perder acesso).
+    // Contas criadas DEPOIS não entram aqui — começam sem servidor nenhum e só
+    // entram por convite ou criando o próprio.
+    const defaultSrv = dspeakServers.find(s => s.id === 'dspeak');
+    if (defaultSrv) {
+      if (!defaultSrv.membersMigrated) {
+        const existing = new Set(defaultSrv.members || []);
+        Object.keys(accounts).forEach(k => existing.add(k));
+        defaultSrv.members = Array.from(existing);
+        defaultSrv.membersMigrated = true;
+        console.log(`[DSpeak] Migração: ${defaultSrv.members.length} conta(s) existente(s) viraram membros do DSPEAK SERVER.`);
+      }
+      // O servidor padrão agora também precisa de convite pra receber gente nova.
+      if (!defaultSrv.inviteCode) defaultSrv.inviteCode = crypto.randomBytes(6).toString('hex');
+    }
 
     // Restaura a fila de música salva no último desligamento/deploy.
     try {
