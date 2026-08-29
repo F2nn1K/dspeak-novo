@@ -402,7 +402,9 @@
     #toggle-chat-btn svg { width: 18px; height: 18px; stroke: #fff; stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; }
     #toggle-chat-btn .chat-unread-dot { position: absolute; top: -4px; right: -4px; width: 11px; height: 11px; border-radius: 50%; background: #ff3333; border: 2px solid #13151b; display: none; }
 
-    #voice-room-view { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; background: #08090c; padding: 16px; gap: 12px; }
+    /* container-type permite ajustar os cards pela largura REAL do palco (que muda
+       quando o chat lateral abre), e não só pela largura da janela. */
+    #voice-room-view { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; background: #08090c; padding: 16px; gap: 12px; container-type: inline-size; }
     .voice-main-content { flex: 1; display: flex; flex-direction: column; position: relative; height: 100%; overflow: hidden; gap: 12px; }
 
     .stage-layout { flex: 1; display: flex; flex-direction: column; gap: 12px; width: 100%; height: 100%; min-height: 0; overflow: hidden; }
@@ -490,10 +492,11 @@
        palco — SEM esticar até o chão quando tem pouca gente na sala. */
     .stage-layout.no-streams .connected-users-stage {
       flex: 1; max-height: none; display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 460px));
+      grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 460px));
       grid-auto-rows: max-content;
-      align-content: center; justify-content: center;
+      align-content: safe center; justify-content: center;
       gap: 14px;
+      padding-bottom: 80px; /* deixa a última fileira livre do dock de botões */
     }
     .stage-layout.no-streams .user-card {
       width: 100%; height: auto; min-height: 0;
@@ -619,6 +622,22 @@
       #voice-room-view.music-panel-open:not(.has-streams) .connected-users-stage {
         padding-right: 8px;
       }
+    }
+    /* Palco estreito (chat aberto junto do player, por exemplo): não dá pra reservar
+       coluna à direita — o mini player fica em cima e os cards descem pra baixo dele,
+       ocupando a largura toda em vez de virarem uma pilha espremida. */
+    @container (max-width: 760px) {
+      #music-together.is-visible:not(.is-open) { width: min(240px, calc(100% - 24px)); }
+      #voice-room-view.has-music-ui:not(.has-streams):not(.music-panel-open) .connected-users-stage {
+        padding-right: 8px;
+        padding-top: 80px;
+      }
+      #voice-room-view.music-panel-open:not(.has-streams) .connected-users-stage {
+        padding-right: 8px;
+        padding-top: calc(min(52vh, 380px) + 26px);
+      }
+      .stage-layout.no-streams .user-card { max-height: 170px; }
+      .stage-layout.no-streams .card-avatar { width: 56px; height: 56px; font-size: 22px; }
     }
     .music-now { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-top: 1px solid rgba(255,85,0,0.18); flex-shrink: 0; }
     .music-now-top { display: flex; align-items: center; gap: 10px; min-width: 0; }
