@@ -363,11 +363,28 @@ function broadcastStatuses() {
   io.emit('user-statuses', userStatuses);
 }
 
+// Status personalizado ("jogando CS", "estudando"...) — texto curto ao lado do
+// status colorido. Igual o status: vive em memória, o cliente reenvia ao logar.
+const userCustomStatus = {}; // usernameKey -> texto
+function broadcastCustomStatuses() {
+  io.emit('user-custom-statuses', userCustomStatus);
+}
+
 // ---------- Ouvir junto (YouTube / Spotify oficiais) ----------
 // Estado por sala de voz. O áudio NÃO é baixado nem retransmitido pelo servidor —
 // só a fila/play/pause/posição. Cada cliente toca no player oficial (iframe).
 const roomMusic = {};
 const MUSIC_MAX_QUEUE = 40;
+
+// Playlists salvas por usuário (persistem entre sessões e servidores).
+const PLAYLISTS_FILE = path.join(DATA_DIR, 'playlists.json');
+let userPlaylists = {}; // usernameKey -> [{ name, items: [{type, sourceId, title, author, thumbnail}] }]
+try {
+  if (fs.existsSync(PLAYLISTS_FILE)) userPlaylists = JSON.parse(fs.readFileSync(PLAYLISTS_FILE, 'utf8'));
+} catch (e) { console.error('[DSpeak] Falha ao ler playlists.json:', e.message); }
+const MAX_PLAYLISTS_PER_USER = 20;
+function savePlaylists() { saveJsonDebounced(PLAYLISTS_FILE, () => userPlaylists); }
+registerFlushable(PLAYLISTS_FILE, () => userPlaylists);
 const MUSIC_MAX_URL = 500;
 
 // A fila de música sobrevive a restart do servidor (deploy): é salva no banco
@@ -738,6 +755,20 @@ function sanitizeChannelForClient(ch) {
   return { ...rest, hasPassword: true };
 }
 
+// Canal marcado como "só pra moderadores" fica invisível (e inacessível) pra quem
+// não gerencia aquele servidor — igual canal privado de staff no Discord.
+function canSeeChannel(socket, ch, srv) {
+  if (!ch) return false;
+  if (!ch.modsOnly) return true;
+  return canManageServer(socket, srv || dspeakServers.find(s => s.id === ch.serverId));
+}
+
+function visibleChannelsFor(socket, srv) {
+  return channels
+    .filter(c => c.serverId === srv.id && canSeeChannel(socket, c, srv))
+    .map(sanitizeChannelForClient);
+}
+
 function sendMyServers(socket) {
   const username = socket.username;
   const mine = dspeakServers
@@ -751,7 +782,7 @@ function sendMyServers(socket) {
       isModerator: isModeratorOfServer(socket, srv),
       moderators: srv.moderators || [],
       inviteCode: canManageServer(socket, srv) ? srv.inviteCode : undefined, // dono e mods veem o código de convite
-      channels: channels.filter(c => c.serverId === srv.id).map(sanitizeChannelForClient)
+      channels: visibleChannelsFor(socket, srv)
     }));
   socket.emit('my-servers', mine);
 }
@@ -809,6 +840,34 @@ function keyOf(username) {
   return String(username || '').trim().toLowerCase();
 }
 
+// ---------- Amigos ----------
+// friends: cada lado guarda o outro (sempre simétrico). requests: pedidos
+// pendentes, indexados por quem RECEBEU (pra mostrar "fulano quer ser seu amigo").
+const FRIENDS_FILE = path.join(DATA_DIR, 'friends.json');
+let friendsData = { friends: {}, requests: {} };
+try {
+  if (fs.existsSync(FRIENDS_FILE)) friendsData = { friends: {}, requests: {}, ...JSON.parse(fs.readFileSync(FRIENDS_FILE, 'utf8')) };
+} catch (e) { console.error('[DSpeak] Falha ao ler friends.json:', e.message); }
+
+function saveFriends() {
+  saveJsonDebounced(FRIENDS_FILE, () => friendsData);
+}
+registerFlushable(FRIENDS_FILE, () => friendsData);
+
+function areFriends(a, b) {
+  return (friendsData.friends[a] || []).includes(b);
+}
+
+function addFriendship(a, b) {
+  friendsData.friends[a] = friendsData.friends[a] || [];
+  friendsData.friends[b] = friendsData.friends[b] || [];
+  if (!friendsData.friends[a].includes(b)) friendsData.friends[a].push(b);
+  if (!friendsData.friends[b].includes(a)) friendsData.friends[b].push(a);
+  friendsData.requests[a] = (friendsData.requests[a] || []).filter(k => k !== b);
+  friendsData.requests[b] = (friendsData.requests[b] || []).filter(k => k !== a);
+  saveFriends();
+}
+
 // Retorna o cargo de um usuário, criando-o como 'member' (padrão pra gente nova) na
 // primeira vez que aparece — não existe mais o cargo Guest.
 function resolveRole(username) {
@@ -827,6 +886,24 @@ function findSocketsByUsername(username) {
     if (s.usernameKey === key) found.push(s);
   }
   return found;
+}
+
+// Monta a lista de amigos de alguém já com presença (online/offline), status e
+// status personalizado — pronta pra desenhar no modal de Amigos do cliente.
+function friendsPayloadFor(key) {
+  const list = (friendsData.friends[key] || []).map(fk => ({
+    name: (accounts[fk] && accounts[fk].username) || fk,
+    avatarUrl: (accounts[fk] && accounts[fk].avatarUrl) || null,
+    online: findSocketsByUsername(fk).length > 0,
+    status: userStatuses[fk] || 'online',
+    customStatus: userCustomStatus[fk] || ''
+  }));
+  const requests = (friendsData.requests[key] || []).map(fk => (accounts[fk] && accounts[fk].username) || fk);
+  return { friends: list, requests };
+}
+
+function pushFriendsTo(key) {
+  findSocketsByUsername(key).forEach(s => s.emit('friends-data', friendsPayloadFor(key)));
 }
 
 // Atualiza o campo "role" de um usuário em todas as listas de voz que ele estiver.
@@ -1016,6 +1093,8 @@ function attachUserSession(socket, username, avatarUrl) {
   socket.emit('update-voice-users', voiceUsers);
   sendMyServers(socket);
   socket.emit('user-statuses', userStatuses);
+  socket.emit('user-custom-statuses', userCustomStatus);
+  if (socket.usernameKey) socket.emit('friends-data', friendsPayloadFor(socket.usernameKey));
 }
 
 io.on('connection', (socket) => {
@@ -1123,6 +1202,83 @@ io.on('connection', (socket) => {
     if (!VALID_STATUSES.includes(status)) return;
     userStatuses[socket.usernameKey] = status;
     broadcastStatuses();
+  });
+
+  // Status personalizado (texto livre curto). Texto vazio = limpar.
+  socket.on('set-custom-status', (data) => {
+    if (!socket.usernameKey) return;
+    const text = String(data && data.text || '').trim().slice(0, 60);
+    if (text) userCustomStatus[socket.usernameKey] = text;
+    else delete userCustomStatus[socket.usernameKey];
+    broadcastCustomStatuses();
+  });
+
+  // ---------- Amigos ----------
+  socket.on('get-friends', () => {
+    if (!socket.usernameKey) return;
+    socket.emit('friends-data', friendsPayloadFor(socket.usernameKey));
+  });
+
+  socket.on('friend-request', (data) => {
+    if (!socket.usernameKey) return;
+    const targetKey = keyOf(String(data && data.to || ''));
+    if (!targetKey || targetKey === socket.usernameKey) return;
+    if (!accounts[targetKey]) {
+      socket.emit('action-denied', { message: 'Não existe ninguém com esse nome no DSpeak.' });
+      return;
+    }
+    if (areFriends(socket.usernameKey, targetKey)) {
+      socket.emit('action-denied', { message: 'Vocês já são amigos!' });
+      return;
+    }
+    // Se a outra pessoa já tinha me pedido, vira amizade direto (match).
+    if ((friendsData.requests[socket.usernameKey] || []).includes(targetKey)) {
+      addFriendship(socket.usernameKey, targetKey);
+      pushFriendsTo(socket.usernameKey);
+      pushFriendsTo(targetKey);
+      socket.emit('action-done', { message: `Vocês agora são amigos!` });
+      return;
+    }
+    friendsData.requests[targetKey] = friendsData.requests[targetKey] || [];
+    if (!friendsData.requests[targetKey].includes(socket.usernameKey)) {
+      friendsData.requests[targetKey].push(socket.usernameKey);
+      saveFriends();
+    }
+    socket.emit('action-done', { message: 'Pedido de amizade enviado!' });
+    findSocketsByUsername(targetKey).forEach(s => {
+      s.emit('friend-request-received', { from: socket.username });
+      s.emit('friends-data', friendsPayloadFor(targetKey));
+    });
+  });
+
+  socket.on('friend-respond', (data) => {
+    if (!socket.usernameKey) return;
+    const fromKey = keyOf(String(data && data.from || ''));
+    if (!fromKey || !(friendsData.requests[socket.usernameKey] || []).includes(fromKey)) return;
+    if (data && data.accept) {
+      addFriendship(socket.usernameKey, fromKey);
+      findSocketsByUsername(fromKey).forEach(s =>
+        s.emit('action-done', { message: `${socket.username} aceitou seu pedido de amizade!` }));
+      pushFriendsTo(fromKey);
+    } else {
+      friendsData.requests[socket.usernameKey] =
+        (friendsData.requests[socket.usernameKey] || []).filter(k => k !== fromKey);
+      saveFriends();
+    }
+    pushFriendsTo(socket.usernameKey);
+  });
+
+  socket.on('friend-remove', (data) => {
+    if (!socket.usernameKey) return;
+    const targetKey = keyOf(String(data && data.name || ''));
+    if (!targetKey) return;
+    friendsData.friends[socket.usernameKey] =
+      (friendsData.friends[socket.usernameKey] || []).filter(k => k !== targetKey);
+    friendsData.friends[targetKey] =
+      (friendsData.friends[targetKey] || []).filter(k => k !== socket.usernameKey);
+    saveFriends();
+    pushFriendsTo(socket.usernameKey);
+    pushFriendsTo(targetKey);
   });
 
   socket.on('change-password', async (data) => {
@@ -1323,9 +1479,10 @@ io.on('connection', (socket) => {
 
   socket.on('join-room', (roomId) => {
     // Só entra na "sala" do socket.io (por onde as mensagens ao vivo circulam)
-    // quem é membro do servidor daquele canal.
+    // quem é membro do servidor daquele canal — e pode VER o canal (só-mods fica de fora).
     const srv = serverOfChannel(roomId);
     if (!isMemberOfServer(srv, socket.username)) return;
+    if (!canSeeChannel(socket, channels.find(c => c.id === roomId), srv)) return;
     socket.join(roomId);
   });
 
@@ -1386,6 +1543,13 @@ io.on('connection', (socket) => {
     if (!channel) return;
     const srv = dspeakServers.find(s => s.id === channel.serverId);
     if (!isMemberOfServer(srv, socket.username)) return;
+    // Canal só-de-mods: membro comum nem deveria estar aqui. Canal somente-leitura
+    // (tipo mural de avisos): todo mundo lê, mas só dono/moderador escreve.
+    if (!canSeeChannel(socket, channel, srv)) return;
+    if (channel.readOnly && !canManageServer(socket, srv)) {
+      socket.emit('action-denied', { message: 'Esse canal é somente leitura — só a staff do servidor pode postar aqui.' });
+      return;
+    }
 
     // O remetente é SEMPRE a identidade deste socket — nome/avatar não vêm mais do
     // payload (dava pra falsificar qualquer identidade só editando o objeto enviado).
@@ -1467,6 +1631,39 @@ io.on('connection', (socket) => {
     io.to(data.room).emit('message-reacted', { room: data.room, messageId: entry.id, reactions: entry.reactions });
   });
 
+  // ---------- Fixar mensagens (só staff do servidor do canal) ----------
+  socket.on('pin-message', (data) => {
+    if (!socket.username || !data) return;
+    const ch = channels.find(c => c.id === data.room);
+    const srv = ch && dspeakServers.find(s => s.id === ch.serverId);
+    const isGlobalMod = socket.role === 'owner' || socket.role === 'moderator';
+    if (!srv || (!canManageServer(socket, srv) && !isGlobalMod)) return;
+    const entry = findMessageById(data.room, data.messageId);
+    if (!entry) return;
+    entry.pinned = !!data.pinned;
+    saveMessages();
+    io.to(data.room).emit('message-pinned', { room: data.room, messageId: entry.id, pinned: entry.pinned });
+  });
+
+  // ---------- Busca no histórico do canal ----------
+  // Procura por texto ou autor nas mensagens guardadas (últimos 7 dias) e devolve
+  // até 50 resultados, do mais recente pro mais antigo. Respeita as mesmas regras
+  // de visibilidade do histórico normal.
+  socket.on('search-messages', (data) => {
+    if (!socket.username || !data) return;
+    const room = String(data.room || '');
+    const ch = channels.find(c => c.id === room);
+    const srv = ch && dspeakServers.find(s => s.id === ch.serverId);
+    if (!srv || !isMemberOfServer(srv, socket.username) || !canSeeChannel(socket, ch, srv)) return;
+    const q = String(data.query || '').trim().toLowerCase();
+    if (q.length < 2) { socket.emit('search-results', { room, query: data.query, results: [] }); return; }
+    const results = (messages[room] || [])
+      .filter(m => (m.message || '').toLowerCase().includes(q) || keyOf(m.user || '').includes(q))
+      .slice(-50)
+      .reverse();
+    socket.emit('search-results', { room, query: data.query, results });
+  });
+
   // ---------- "Fulano está digitando..." ----------
   // Só repassa o aviso pra sala (ou pro destinatário da DM) — o cliente cuida do
   // resto (aparecer/sumir sozinho). Nada é salvo.
@@ -1490,6 +1687,8 @@ io.on('connection', (socket) => {
     // conta nova conseguiria puxar as conversas do 'geral' sem ter convite.
     const srv = serverOfChannel(channelId);
     if (!isMemberOfServer(srv, socket.username)) return;
+    const chDef = channels.find(c => c.id === channelId);
+    if (!canSeeChannel(socket, chDef, srv)) return;
     pruneChannelMessages(channelId);
     socket.emit('channel-history', { room: channelId, messages: messages[channelId] || [] });
   });
@@ -1499,7 +1698,7 @@ io.on('connection', (socket) => {
     if (!socket.username) return;
     const toUsername = String(data && data.toUsername || '').trim();
     const message = String(data && data.message || '').trim().slice(0, 2000);
-    if (!toUsername || (!message && !(data && data.attachment))) return;
+    if (!toUsername || (!message && !(data && data.attachment) && !(data && data.callInvite))) return;
     if (keyOf(toUsername) === socket.usernameKey) return; // não manda DM pra si mesmo
 
     const pairKey = dmPairKey(socket.username, toUsername);
@@ -1512,6 +1711,16 @@ io.on('connection', (socket) => {
       date: data && data.date,
       timestamp: Date.now()
     };
+
+    // Convite de call: vira um botão "Entrar na sala" na DM do destinatário.
+    // Só aceita se o canal existir mesmo e o remetente for membro do servidor dele.
+    if (data && data.callInvite && data.callInvite.channelId) {
+      const ch = channels.find(c => c.id === data.callInvite.channelId);
+      const chSrv = ch && dspeakServers.find(s => s.id === ch.serverId);
+      if (ch && ch.type === 'voice' && chSrv && isMemberOfServer(chSrv, socket.username)) {
+        entry.callInvite = { channelId: ch.id, channelName: ch.name, serverId: chSrv.id, serverName: chSrv.name };
+      }
+    }
     if (!directMessages[pairKey]) directMessages[pairKey] = [];
     directMessages[pairKey].push(entry);
     pruneDmPair(pairKey);
@@ -1537,9 +1746,11 @@ io.on('connection', (socket) => {
   // todo mundo (cada pessoa só deve ver os canais dos servidores em que está).
   function broadcastChannelsSync(serverId) {
     const srv = dspeakServers.find(s => s.id === serverId);
-    const payload = { serverId, channels: channels.filter(c => c.serverId === serverId) };
     for (const [, s] of io.sockets.sockets) {
-      if (s.username && isMemberOfServer(srv, s.username)) s.emit('channels-sync', payload);
+      if (!s.username || !isMemberOfServer(srv, s.username)) continue;
+      // Cada pessoa recebe SÓ os canais que pode ver (canais só-de-mods ficam de
+      // fora pra membro comum) e sem o hash de senha (que antes vazava aqui).
+      s.emit('channels-sync', { serverId, channels: visibleChannelsFor(s, srv) });
     }
   }
 
@@ -1556,6 +1767,10 @@ io.on('connection', (socket) => {
     // servidores diferentes (dois servidores podem ter um canal chamado "geral").
     const id = `${serverId}__${name.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`;
     const channel = { id, name, type, serverId };
+    // Permissões por canal: "só mods veem" (qualquer tipo) e "somente leitura —
+    // só mods escrevem" (faz sentido só em canal de texto).
+    channel.modsOnly = !!(data && data.modsOnly);
+    if (type === 'text') channel.readOnly = !!(data && data.readOnly);
     if (type === 'voice') {
       const userLimit = parseInt(data && data.userLimit, 10);
       channel.userLimit = (Number.isFinite(userLimit) && userLimit > 0) ? userLimit : 0; // 0 = sem limite
@@ -1578,6 +1793,14 @@ io.on('connection', (socket) => {
 
     const newName = String(data && data.newName || '').trim();
     if (newName && !ch.locked) ch.name = newName; // canais travados (ex: "geral") não podem ser renomeados
+
+    // Permissões por canal (podem ser ligadas/desligadas depois de criado).
+    if (data && Object.prototype.hasOwnProperty.call(data, 'modsOnly')) {
+      ch.modsOnly = !!data.modsOnly;
+    }
+    if (ch.type === 'text' && data && Object.prototype.hasOwnProperty.call(data, 'readOnly')) {
+      ch.readOnly = !!data.readOnly;
+    }
 
     if (ch.type === 'voice') {
       if (data && Object.prototype.hasOwnProperty.call(data, 'userLimit')) {
@@ -1704,6 +1927,12 @@ io.on('connection', (socket) => {
     const srv = dspeakServers.find(s => s.inviteCode === inviteCode);
     if (!srv) { socket.emit('server-join-failed', { message: 'Link de convite inválido ou expirado.' }); return; }
 
+    // Banido não volta nem com convite — só se a staff desbanir.
+    if ((srv.banned || []).includes(socket.usernameKey)) {
+      socket.emit('server-join-failed', { message: 'Você foi banido desse servidor e não pode entrar de novo.' });
+      return;
+    }
+
     if (isMemberOfServer(srv, socket.username)) {
       // Já é membro — só reenvia a lista e manda pra lá mesmo assim (cobre o caso de
       // clicar num link de convite de um servidor que a pessoa já está).
@@ -1755,6 +1984,85 @@ io.on('connection', (socket) => {
     for (const [, s] of io.sockets.sockets) {
       if (s.username && isMemberOfServer(srv, s.username)) sendMyServers(s);
     }
+  });
+
+  // ---------- Expulsar / banir alguém DO SERVIDOR (não só da sala de voz) ----------
+  // Dono e Moderadores do servidor podem expulsar/banir membros; Moderador não
+  // mexe em outro Moderador nem no dono — isso é papel do dono. Banido entra numa
+  // lista persistida e não consegue voltar nem pelo link de convite.
+  function canModerateTarget(socket, srv, targetKey) {
+    if (!canManageServer(socket, srv)) return false;
+    if (targetKey === socket.usernameKey) return false;           // ninguém se expulsa
+    if (srv.ownerUsername === targetKey) return false;            // dono é intocável
+    const targetIsMod = (srv.moderators || []).includes(targetKey);
+    if (targetIsMod && !isOwnerOfServer(socket, srv)) return false; // mod não mexe em mod
+    // No servidor padrão (dono global), Owner global também é intocável por mods.
+    const targetSockets = findSocketsByUsername(targetKey);
+    if (targetSockets.some(s => s.role === 'owner') && !isOwnerOfServer(socket, srv)) return false;
+    return true;
+  }
+
+  function removeUserFromServer(srv, targetKey, { ban }) {
+    srv.members = (srv.members || []).filter(k => k !== targetKey);
+    srv.moderators = (srv.moderators || []).filter(k => k !== targetKey);
+    if (ban) {
+      srv.banned = srv.banned || [];
+      if (!srv.banned.includes(targetKey)) srv.banned.push(targetKey);
+    }
+    saveServers();
+
+    // Se a pessoa estiver online: tira das salas de voz DESSE servidor, atualiza a
+    // lista de servidores dela (o servidor some da barra) e avisa com um toast.
+    findSocketsByUsername(targetKey).forEach(ts => {
+      let kicked = false;
+      Object.keys(voiceUsers).forEach(chId => {
+        const chSrv = serverOfChannel(chId);
+        if (chSrv && chSrv.id === srv.id && voiceUsers[chId].some(u => u.socketId === ts.id)) {
+          voiceUsers[chId] = voiceUsers[chId].filter(u => u.socketId !== ts.id);
+          kicked = true;
+        }
+      });
+      if (kicked) {
+        ts.emit('kicked-from-voice');
+        io.emit('update-voice-users', voiceUsers);
+      }
+      sendMyServers(ts);
+      ts.emit('removed-from-server', { serverName: srv.name, banned: !!ban });
+    });
+  }
+
+  socket.on('kick-from-server', (data) => {
+    if (!socket.username || !data) return;
+    const srv = dspeakServers.find(s => s.id === data.serverId);
+    if (!srv) return;
+    const targetKey = keyOf(String(data.targetUsername || ''));
+    if (!targetKey || !isMemberOfServer(srv, targetKey)) return;
+    if (!canModerateTarget(socket, srv, targetKey)) return;
+    removeUserFromServer(srv, targetKey, { ban: !!data.ban });
+    socket.emit('action-done', {
+      message: data.ban
+        ? `${data.targetUsername} foi banido do servidor.`
+        : `${data.targetUsername} foi expulso do servidor (pode voltar com um convite).`
+    });
+  });
+
+  // Lista de banidos (só quem gerencia o servidor vê) + desbanir.
+  socket.on('get-server-bans', (serverId) => {
+    const srv = dspeakServers.find(s => s.id === serverId);
+    if (!srv || !canManageServer(socket, srv)) return;
+    socket.emit('server-bans', { serverId, banned: srv.banned || [] });
+  });
+
+  socket.on('unban-from-server', (data) => {
+    if (!data) return;
+    const srv = dspeakServers.find(s => s.id === data.serverId);
+    if (!srv || !canManageServer(socket, srv)) return;
+    const targetKey = keyOf(String(data.targetUsername || ''));
+    if (!targetKey) return;
+    srv.banned = (srv.banned || []).filter(k => k !== targetKey);
+    saveServers();
+    socket.emit('server-bans', { serverId: srv.id, banned: srv.banned });
+    socket.emit('action-done', { message: `${data.targetUsername} foi desbanido — já pode entrar de novo com convite.` });
   });
 
   // ---------- Gestão de cargos ----------
@@ -1840,8 +2148,13 @@ io.on('connection', (socket) => {
       sfu.closeRouterIfUnused(oldChannel);
     }
 
-    // Voz também é só pra membro do servidor daquele canal.
-    if (!isMemberOfServer(serverOfChannel(channelId), socket.username || username)) return;
+    // Voz também é só pra membro do servidor daquele canal (e canal só-de-mods
+    // não aceita membro comum nem por id direto).
+    {
+      const srvOfCh = serverOfChannel(channelId);
+      if (!isMemberOfServer(srvOfCh, socket.username || username)) return;
+      if (!canSeeChannel(socket, channels.find(c => c.id === channelId), srvOfCh)) return;
+    }
 
     if (!voiceUsers[channelId]) voiceUsers[channelId] = [];
 
@@ -1928,6 +2241,12 @@ io.on('connection', (socket) => {
       socket.emit('sync-active-streams', activeRoomStreams[channelId]);
     }
 
+    // Câmeras já ligadas na sala: quem entra agora abre os tiles na hora.
+    const camerasOn = (voiceUsers[channelId] || [])
+      .map(u => u.socketId)
+      .filter(sid => sid !== socket.id && sfu.producersOf(sid, 'camera').length > 0);
+    if (camerasOn.length) socket.emit('sync-active-cameras', camerasOn);
+
     socket.emit('music-state', publicMusicState(roomMusic[channelId]));
   });
 
@@ -1957,7 +2276,8 @@ io.on('connection', (socket) => {
     if (activeRoomStreams[channelId]) {
       activeRoomStreams[channelId] = activeRoomStreams[channelId].filter(id => id !== socket.id);
     }
-    sfu.closeProducers(socket.id);
+    // Fecha SÓ os producers da tela — a voz (mic via SFU) continua de pé.
+    sfu.closeProducersBySource(socket.id, 'screen');
     socket.to(channelId).emit('user-stopped-streaming', socket.id);
   });
 
@@ -1997,6 +2317,139 @@ io.on('connection', (socket) => {
   });
 
   // ---------- Ouvir junto ----------
+
+  // Busca por nome no YouTube (sem precisar de chave de API): lê o JSON embutido
+  // na página de resultados e devolve os primeiros vídeos. Se o YouTube mudar o
+  // formato, só a busca para — colar link direto continua funcionando.
+  socket.on('music-search', async (data) => {
+    if (!socket.username) return;
+    const query = String(data && data.query || '').trim().slice(0, 100);
+    if (query.length < 2) return;
+    const now = Date.now();
+    socket.musicSearchTimes = (socket.musicSearchTimes || []).filter(t => now - t < 10000);
+    if (socket.musicSearchTimes.length >= 5) return;
+    socket.musicSearchTimes.push(now);
+
+    try {
+      const res = await fetch('https://www.youtube.com/results?search_query=' + encodeURIComponent(query), {
+        headers: {
+          'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+          'accept-language': 'pt-BR,pt;q=0.9,en;q=0.8'
+        },
+        signal: AbortSignal.timeout(6000)
+      });
+      const html = await res.text();
+      const m = html.match(/var ytInitialData\s*=\s*(\{[\s\S]+?\});\s*<\/script>/);
+      const results = [];
+      if (m) {
+        const parsedData = JSON.parse(m[1]);
+        const sections = parsedData && parsedData.contents
+          && parsedData.contents.twoColumnSearchResultsRenderer
+          && parsedData.contents.twoColumnSearchResultsRenderer.primaryContents
+          && parsedData.contents.twoColumnSearchResultsRenderer.primaryContents.sectionListRenderer
+          && parsedData.contents.twoColumnSearchResultsRenderer.primaryContents.sectionListRenderer.contents || [];
+        outer:
+        for (const sec of sections) {
+          const items = (sec.itemSectionRenderer && sec.itemSectionRenderer.contents) || [];
+          for (const it of items) {
+            const v = it.videoRenderer;
+            if (!v || !v.videoId) continue;
+            results.push({
+              videoId: v.videoId,
+              title: String((v.title && v.title.runs && v.title.runs[0] && v.title.runs[0].text) || '').slice(0, 200),
+              author: String((v.ownerText && v.ownerText.runs && v.ownerText.runs[0] && v.ownerText.runs[0].text) || '').slice(0, 120),
+              duration: (v.lengthText && v.lengthText.simpleText) || '',
+              thumbnail: `https://i.ytimg.com/vi/${v.videoId}/mqdefault.jpg`
+            });
+            if (results.length >= 8) break outer;
+          }
+        }
+      }
+      socket.emit('music-search-results', { query, results });
+    } catch (e) {
+      socket.emit('music-search-results', { query, results: [] });
+    }
+  });
+
+  // ---------- Playlists salvas (por usuário) ----------
+  socket.on('get-playlists', () => {
+    if (!socket.usernameKey) return;
+    const mine = userPlaylists[socket.usernameKey] || [];
+    socket.emit('playlists-data', mine.map(p => ({ name: p.name, count: p.items.length })));
+  });
+
+  // Salva a fila atual da sala como uma playlist com nome.
+  socket.on('playlist-save', (data) => {
+    if (!socket.usernameKey) return;
+    const name = String(data && data.name || '').trim().slice(0, 40);
+    if (!name) return;
+    const channelId = currentMusicChannelOf(socket);
+    const session = channelId && roomMusic[channelId];
+    if (!session || !session.queue.length) {
+      socket.emit('music-error', 'A fila está vazia — não tem o que salvar.');
+      return;
+    }
+    userPlaylists[socket.usernameKey] = userPlaylists[socket.usernameKey] || [];
+    const mine = userPlaylists[socket.usernameKey];
+    const items = session.queue.map(it => ({
+      type: it.type, sourceId: it.sourceId, title: it.title, author: it.author, thumbnail: it.thumbnail
+    }));
+    const existing = mine.find(p => p.name.toLowerCase() === name.toLowerCase());
+    if (existing) existing.items = items; // mesmo nome = sobrescreve
+    else {
+      if (mine.length >= MAX_PLAYLISTS_PER_USER) {
+        socket.emit('music-error', `Você já tem ${MAX_PLAYLISTS_PER_USER} playlists — apaga alguma antes.`);
+        return;
+      }
+      mine.push({ name, items });
+    }
+    savePlaylists();
+    socket.emit('playlists-data', mine.map(p => ({ name: p.name, count: p.items.length })));
+    socket.emit('action-done', { message: `Playlist "${name}" salva com ${items.length} itens!` });
+  });
+
+  // Joga a playlist inteira na fila da sala atual.
+  socket.on('playlist-load', (data) => {
+    if (!socket.usernameKey) return;
+    const name = String(data && data.name || '').trim();
+    const pl = (userPlaylists[socket.usernameKey] || []).find(p => p.name.toLowerCase() === name.toLowerCase());
+    if (!pl) return;
+    const channelId = currentMusicChannelOf(socket);
+    if (!channelId) {
+      socket.emit('music-error', 'Entra numa sala de voz pra carregar a playlist.');
+      return;
+    }
+    const session = ensureMusicSession(channelId);
+    let added = 0;
+    for (const it of pl.items) {
+      if (session.queue.length >= MUSIC_MAX_QUEUE) break;
+      session.queue.push({
+        id: crypto.randomBytes(8).toString('hex'),
+        type: it.type, sourceId: it.sourceId, title: it.title,
+        author: it.author, thumbnail: it.thumbnail,
+        addedBy: String(socket.username || 'Alguém').slice(0, 40)
+      });
+      added++;
+    }
+    if (added && !session.currentId) {
+      session.currentId = session.queue[0].id;
+      session.positionSec = 0;
+      session.playing = true;
+      session.updatedAt = Date.now();
+    }
+    emitMusicState(channelId);
+    socket.emit('action-done', { message: `${added} música(s) da playlist "${pl.name}" entraram na fila.` });
+  });
+
+  socket.on('playlist-delete', (data) => {
+    if (!socket.usernameKey) return;
+    const name = String(data && data.name || '').trim();
+    const mine = userPlaylists[socket.usernameKey] || [];
+    userPlaylists[socket.usernameKey] = mine.filter(p => p.name.toLowerCase() !== name.toLowerCase());
+    savePlaylists();
+    socket.emit('playlists-data', userPlaylists[socket.usernameKey].map(p => ({ name: p.name, count: p.items.length })));
+  });
+
   socket.on('music-add', async (data) => {
     const channelId = currentMusicChannelOf(socket);
     if (!channelId) {

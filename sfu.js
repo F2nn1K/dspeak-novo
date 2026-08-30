@@ -134,12 +134,20 @@ function transportParams(t) {
 }
 
 // Produtores ativos de um socket (o que ele está transmitindo pra sala).
-function producersOf(socketId) {
-  const st = socketState.get(socketId);
-  return st ? Array.from(st.producers.values()).filter(p => !p.closed) : [];
+// source: 'screen' (tela + áudio de sistema), 'mic' (voz) ou 'camera'.
+// Producers antigos sem appData.source contam como 'screen' (compatibilidade).
+function sourceOf(p) {
+  return (p.appData && p.appData.source) || 'screen';
 }
 
-// Fecha só o que o socket está PRODUZINDO (parou a transmissão), mantendo o que
+function producersOf(socketId, source) {
+  const st = socketState.get(socketId);
+  if (!st) return [];
+  const all = Array.from(st.producers.values()).filter(p => !p.closed);
+  return source ? all.filter(p => sourceOf(p) === source) : all;
+}
+
+// Fecha TUDO que o socket está produzindo (desconectou da voz), mantendo o que
 // ele consome dos outros.
 function closeProducers(socketId) {
   const st = socketState.get(socketId);
@@ -149,13 +157,32 @@ function closeProducers(socketId) {
   if (st.sendTransport) { try { st.sendTransport.close(); } catch (e) {} st.sendTransport = null; }
 }
 
+// Fecha só os producers de uma origem (ex: parou a TELA mas a VOZ continua).
+// O sendTransport fica de pé enquanto sobrar qualquer producer.
+function closeProducersBySource(socketId, source) {
+  const st = socketState.get(socketId);
+  if (!st) return;
+  st.producers.forEach((p, id) => {
+    if (sourceOf(p) === source) {
+      try { p.close(); } catch (e) {}
+      st.producers.delete(id);
+    }
+  });
+  if (st.producers.size === 0 && st.sendTransport) {
+    try { st.sendTransport.close(); } catch (e) {}
+    st.sendTransport = null;
+  }
+}
+
 // Fecha os consumers que esse socket tem DA transmissão de outro socket
-// (clicou em "fechar" na live de alguém, ou o streamer parou).
-function closeConsumersOfProducer(socketId, producerSocketId) {
+// (clicou em "fechar" na live de alguém, ou o streamer parou). Com source,
+// fecha só aquela origem (ex: parou de assistir a TELA mas segue ouvindo o mic).
+function closeConsumersOfProducer(socketId, producerSocketId, source) {
   const st = socketState.get(socketId);
   if (!st) return;
   st.consumers.forEach((c, id) => {
-    if (c.appData && c.appData.producerSocketId === producerSocketId) {
+    if (c.appData && c.appData.producerSocketId === producerSocketId
+        && (!source || c.appData.source === source)) {
       try { c.close(); } catch (e) {}
       st.consumers.delete(id);
     }
@@ -270,12 +297,15 @@ function attachSocketHandlers(io, socket, helpers) {
     if (p) { try { p.close(); } catch (e) {} st.producers.delete(data.producerId); }
   });
 
-  // Avisa quem está assistindo que tem producer novo (ex: troca de qualidade
-  // recriou o vídeo) — cada espectador re-consome só o que mudou.
-  socket.on('sfu-new-producer', () => {
+  // Avisa a sala que tem producer novo (troca de qualidade da tela, mic
+  // publicado ao entrar na sala, câmera ligada...) — cada um decide se consome.
+  socket.on('sfu-new-producer', (data) => {
     const st = socketState.get(socket.id);
     if (!st || !st.channelId) return;
-    socket.to(st.channelId).emit('sfu-producer-updated', { producerSocketId: socket.id });
+    socket.to(st.channelId).emit('sfu-producer-updated', {
+      producerSocketId: socket.id,
+      source: (data && data.source) || 'screen'
+    });
   });
 
   socket.on('sfu-consume', async (data, cb) => {
@@ -285,7 +315,9 @@ function attachSocketHandlers(io, socket, helpers) {
       const channelId = currentChannelOf(socket);
       if (!channelId) return cb({ error: 'not-in-voice' });
       const producerSocketId = String(data.producerSocketId || '');
-      const producers = producersOf(producerSocketId);
+      // source: 'screen' (padrão, compatível com clientes antigos), 'mic' ou 'camera'.
+      const wantedSource = String(data.source || 'screen');
+      const producers = producersOf(producerSocketId, wantedSource);
       // Streamer não publicou no SFU (cliente antigo, ou o SFU falhou pra ele):
       // o espectador cai no modo mesh antigo sozinho ao receber esse erro.
       if (!producers.length) return cb({ error: 'no-producers' });
@@ -295,9 +327,10 @@ function attachSocketHandlers(io, socket, helpers) {
       st.channelId = channelId;
       if (!st.recvTransport) return cb({ error: 'no-transport' });
 
-      // Se já consumia essa transmissão (ex: re-consumo após troca de
-      // qualidade), fecha os consumers antigos primeiro pra não duplicar áudio.
-      closeConsumersOfProducer(socket.id, producerSocketId);
+      // Se já consumia essa origem (ex: re-consumo após troca de qualidade),
+      // fecha os consumers antigos primeiro pra não duplicar áudio — só os da
+      // MESMA origem (re-consumir a tela não pode derrubar o mic da pessoa).
+      closeConsumersOfProducer(socket.id, producerSocketId, wantedSource);
 
       const results = [];
       for (const producer of producers) {
@@ -308,13 +341,13 @@ function attachSocketHandlers(io, socket, helpers) {
           // Nasce pausado: o cliente confirma que montou tudo e aí despausa —
           // evita perder os primeiros keyframes à toa.
           paused: true,
-          appData: { producerSocketId }
+          appData: { producerSocketId, source: wantedSource }
         });
         st.consumers.set(consumer.id, consumer);
         consumer.on('transportclose', () => st.consumers.delete(consumer.id));
         consumer.on('producerclose', () => {
           st.consumers.delete(consumer.id);
-          socket.emit('sfu-producer-closed', { producerSocketId, consumerId: consumer.id });
+          socket.emit('sfu-producer-closed', { producerSocketId, consumerId: consumer.id, source: wantedSource });
         });
         results.push({
           consumerId: consumer.id,
@@ -345,12 +378,13 @@ function attachSocketHandlers(io, socket, helpers) {
   // Espectador fechou a live de alguém do lado dele.
   socket.on('sfu-stop-consuming', (data) => {
     if (!data || !data.producerSocketId) return;
-    closeConsumersOfProducer(socket.id, String(data.producerSocketId));
+    closeConsumersOfProducer(socket.id, String(data.producerSocketId), data.source ? String(data.source) : null);
   });
 
-  // Streamer encerrou a transmissão.
-  socket.on('sfu-close-producers', () => {
-    closeProducers(socket.id);
+  // Encerrou uma origem específica (tela/câmera) — sem source, fecha tudo.
+  socket.on('sfu-close-producers', (data) => {
+    if (data && data.source) closeProducersBySource(socket.id, String(data.source));
+    else closeProducers(socket.id);
   });
 }
 
@@ -359,6 +393,7 @@ module.exports = {
   isReady,
   attachSocketHandlers,
   closeProducers,
+  closeProducersBySource,
   cleanupSocket,
   closeRouterIfUnused,
   producersOf
