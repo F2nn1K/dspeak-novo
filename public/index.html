@@ -91,6 +91,9 @@
     body.meeting-mode #servers-sidebar { display: none !important; }
     body.meeting-mode #server-sidebar-content { display: none !important; }
     body.meeting-mode #friends-btn { display: none !important; }
+    /* Reunião rápida não precisa de busca no histórico nem mensagens fixadas —
+       só o botão do chat fica no topo. */
+    body.meeting-mode .chat-header-tool { display: none !important; }
     #meeting-bar {
       display: none; align-items: center; justify-content: space-between; gap: 8px;
       background: #13151b; padding: 10px 14px; border-bottom: 1px solid rgba(255, 85, 0, 0.15);
@@ -2718,7 +2721,10 @@
       document.getElementById('meeting-bar').style.display = 'flex';
       startMeetingCountdown();
 
-      // Chat lateral da reunião (mesmo chat de sala de voz de sempre).
+      // Chat lateral da reunião (mesmo chat de sala de voz de sempre) — começa
+      // SEMPRE fechado aqui: o palco com a galera é a tela principal, e o chat
+      // só abre se a pessoa clicar no balãozinho do topo.
+      voiceChatHidden = true;
       activeChannel = res.channelId;
       document.getElementById('chat-header-title').textContent = '🔊 Reunião';
       switchWorkspaceLayout(true);
