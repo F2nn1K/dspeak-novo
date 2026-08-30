@@ -4022,29 +4022,40 @@
     // ---------- Item 3: microfone real (voz) ----------
     async function ensureLocalMic() {
       if (localMicStream) return localMicStream;
+      // Item 5: supressão de ruído. O verdadeiro Krisp é um SDK proprietário pago que não dá
+      // pra embutir de graça num app web; usamos aqui o que o navegador tem de mais forte
+      // (echo/noise/AGC nativos) SOMADO a um noise gate próprio (abaixo), que corta o volume
+      // quase todo quando você não está falando — é isso que reduz o ruído de ambiente.
+      const noiseCleanConstraints = {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      };
+      const deviceId = selectedMicId || document.getElementById('select-audio-input').value;
       try {
-        const deviceId = selectedMicId || document.getElementById('select-audio-input').value;
-        // Item 5: supressão de ruído. O verdadeiro Krisp é um SDK proprietário pago que não dá
-        // pra embutir de graça num app web; usamos aqui o que o navegador tem de mais forte
-        // (echo/noise/AGC nativos) SOMADO a um noise gate próprio (abaixo), que corta o volume
-        // quase todo quando você não está falando — é isso que reduz o ruído de ambiente.
-        const noiseCleanConstraints = {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        };
         localMicStream = await navigator.mediaDevices.getUserMedia({
           audio: deviceId
             ? { deviceId: { exact: deviceId }, ...noiseCleanConstraints }
             : noiseCleanConstraints
         });
-        localMicStream.getAudioTracks().forEach(t => t.enabled = !isMuted && !isDeafened);
-        setupSpeakingDetection(localMicStream, socket.id);
-        setupMicProcessing(localMicStream);
       } catch (err) {
-        console.error("Erro ao acessar o microfone:", err);
-        alert("Não foi possível acessar o microfone. Verifique as permissões do navegador.");
+        // O microfone salvo pode simplesmente não existir NESTE navegador (foi
+        // escolhido no app desktop, o fone foi desplugado, perfil diferente...) —
+        // isso dá OverconstrainedError, que NÃO é problema de permissão. Antes de
+        // desistir, tenta de novo com o microfone padrão do sistema.
+        console.warn(`Mic escolhido falhou (${err && err.name}) — tentando o microfone padrão do sistema.`);
+        try {
+          localMicStream = await navigator.mediaDevices.getUserMedia({ audio: noiseCleanConstraints });
+          showToast('Seu microfone salvo não foi encontrado — usando o microfone padrão do sistema.');
+        } catch (err2) {
+          console.error('Erro ao acessar o microfone:', err2);
+          alert('Não consegui acessar nenhum microfone. Confere a permissão do navegador (cadeado na barra de endereço) e recarrega a página.');
+          return null;
+        }
       }
+      localMicStream.getAudioTracks().forEach(t => t.enabled = !isMuted && !isDeafened);
+      setupSpeakingDetection(localMicStream, socket.id);
+      setupMicProcessing(localMicStream);
       return localMicStream;
     }
 
