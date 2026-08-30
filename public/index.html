@@ -95,17 +95,24 @@
        só o botão do chat fica no topo. */
     body.meeting-mode .chat-header-tool { display: none !important; }
     #meeting-bar {
-      display: none; align-items: center; justify-content: space-between; gap: 8px;
-      background: #13151b; padding: 10px 14px; border-bottom: 1px solid rgba(255, 85, 0, 0.15);
+      display: none; align-items: center; justify-content: space-between; gap: 6px;
+      background: #13151b; padding: 10px; border-bottom: 1px solid rgba(255, 85, 0, 0.15);
     }
     #meeting-bar .meeting-timer { font-size: 13px; font-weight: bold; color: #ffb347; display: flex; align-items: center; gap: 6px; }
     #meeting-bar .meeting-timer.urgent { color: #ff5555; }
     #meeting-copy-btn {
       background: rgba(255,85,0,0.15); border: 1px solid rgba(255,85,0,0.4); color: #ff8844;
-      font-size: 12px; font-weight: bold; padding: 6px 12px; border-radius: 8px; cursor: pointer;
+      font-size: 12px; font-weight: bold; padding: 6px 8px; border-radius: 8px; cursor: pointer;
       transition: background 0.15s;
     }
     #meeting-copy-btn:hover { background: rgba(255,85,0,0.3); }
+    #meeting-copy-btn, #meeting-end-btn { white-space: nowrap; }
+    #meeting-end-btn {
+      background: rgba(255,51,51,0.15); border: 1px solid rgba(255,51,51,0.45); color: #ff6b6b;
+      font-size: 12px; font-weight: bold; padding: 6px 8px; border-radius: 8px; cursor: pointer;
+      transition: background 0.15s;
+    }
+    #meeting-end-btn:hover { background: rgba(255,51,51,0.35); }
     #session-replaced-overlay { position: fixed; inset: 0; background: rgba(12, 13, 16, 0.97); backdrop-filter: blur(12px); z-index: 6000; display: none; align-items: center; justify-content: center; text-align: center; padding: 20px; }
     #session-replaced-overlay.visible { display: flex; }
 
@@ -1027,6 +1034,7 @@
         <div style="font-size:15px; color:#f2f3f5; font-weight:bold;" id="meeting-closed-title">Essa reunião já foi encerrada</div>
         <div style="font-size:13px; color:#8a8f9d;">Reuniões instantâneas duram 40 minutos. Dá pra criar outra agora mesmo e mandar o link novo pra galera.</div>
         <button class="btn-create" onclick="createAnotherMeeting()" style="width:100%;">🎥 Criar nova reunião</button>
+        <button onclick="location.href='/'" style="width:100%; background:transparent; border:1px solid #3a3d47; color:#c8cbd4; font-size:13px; font-weight:bold; padding:10px; border-radius:8px; cursor:pointer;">← Voltar para o site</button>
       </div>
     </div>
   </div>
@@ -1087,7 +1095,10 @@
       <!-- Barra da reunião instantânea: cronômetro dos 40 min + copiar o link. -->
       <div id="meeting-bar">
         <span class="meeting-timer" id="meeting-timer">⏱ <span id="meeting-countdown">40:00</span></span>
-        <button id="meeting-copy-btn" onclick="copyMeetingLink()">🔗 Copiar link</button>
+        <div style="display:flex; gap:6px;">
+          <button id="meeting-copy-btn" onclick="copyMeetingLink()" title="Copiar o link da reunião">🔗 Link</button>
+          <button id="meeting-end-btn" onclick="endMeetingForAll()" title="Encerrar a reunião para todo mundo">Encerrar</button>
+        </div>
       </div>
       <div class="voice-connection-panel" id="voice-connection-panel">
         <div class="voice-status-info">
@@ -2760,6 +2771,12 @@
       );
     }
 
+    // Encerra a reunião PRA TODO MUNDO (não só sair) — com confirmação.
+    function endMeetingForAll() {
+      if (!confirm('Encerrar a reunião para todo mundo agora?')) return;
+      socket.emit('end-meeting');
+    }
+
     function showMeetingClosedState() {
       document.getElementById('meeting-join-state').style.display = 'none';
       document.getElementById('meeting-closed-state').style.display = 'flex';
@@ -2790,7 +2807,7 @@
 
     // Tempo esgotado (ou reunião não existe mais): desliga tudo e mostra a
     // tela de fim com o botão de criar outra.
-    socket.on('meeting-closed', () => {
+    socket.on('meeting-closed', (data) => {
       if (!MEETING_MODE_ID) return;
       clearInterval(meetingCountdownTimer);
       if (connectedVoiceChannel) {
@@ -2799,7 +2816,8 @@
         teardownVoiceConnectionState();
       }
       document.getElementById('meeting-bar').style.display = 'none';
-      document.getElementById('meeting-closed-title').textContent = 'A reunião chegou aos 40 minutos';
+      document.getElementById('meeting-closed-title').textContent =
+        (data && data.reason === 'ended') ? 'A reunião foi encerrada' : 'A reunião chegou aos 40 minutos';
       showMeetingClosedState();
     });
 

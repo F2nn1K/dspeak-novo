@@ -1330,6 +1330,14 @@ io.on('connection', (socket) => {
     cb({ ok: true, meetingId: id, channelId: chId, name, expiresAt: m.expiresAt, isGuest: !!socket.isGuest });
   });
 
+  // Encerrar a reunião pra todo mundo (botão "Encerrar"). Reunião rápida entre
+  // conhecidos: qualquer participante pode encerrar — sem burocracia de "dono".
+  socket.on('end-meeting', () => {
+    if (!socket.meetingId || !meetings[socket.meetingId]) return;
+    console.log(`[Reunião] ${socket.meetingId} encerrada manualmente por ${socket.username || socket.id}.`);
+    closeMeeting(socket.meetingId, 'ended');
+  });
+
   // Status escolhido no seletor do rodapé — replica pra todo mundo na hora.
   socket.on('set-status', (data) => {
     if (socket.isGuest) return;
