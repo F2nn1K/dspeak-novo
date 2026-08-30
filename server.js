@@ -36,6 +36,12 @@ app.get('/app', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+// Reunião instantânea (estilo Meet): o link /m/abc-defg-hij abre o próprio app
+// em modo convidado — a pessoa só digita um nome, sem conta e sem servidor.
+app.get('/m/:id', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
 // Atalho amigável: /login e /download levam pros lugares certos.
 app.get('/login', (req, res) => res.redirect('/app'));
 app.get('/download', (req, res) => res.redirect('/download/windows'));
@@ -351,6 +357,78 @@ app.get('/files/:id', async (req, res) => {
 
 const voiceUsers = {};
 const activeRoomStreams = {};
+
+// ---------- Reuniões instantâneas (estilo Meet) ----------
+// Qualquer pessoa cria um link /m/abc-defg-hij e manda pra quem quiser: quem
+// abre só digita um NOME (sem conta, sem servidor) e cai na sala com voz, tela,
+// câmera e chat. A sala vive 40 minutos e fecha sozinha — pra continuar, é só
+// gerar outro link. Tudo em memória: reunião é descartável por natureza.
+const meetings = {}; // meetingId -> { id, createdAt, expiresAt, warned, hostName }
+const MEETING_TTL_MS = 40 * 60 * 1000;
+const MEETING_MAX_PEOPLE = 25;
+const meetingCreationByIp = {}; // ip -> [timestamps] (anti-abuso)
+
+function generateMeetingId() {
+  // Formato do Meet (abc-defg-hij): fácil de ler em voz alta e de digitar.
+  const letters = () => Array.from(crypto.randomBytes(8))
+    .map(b => 'abcdefghijkmnpqrstuvwxyz'[b % 24]).join('');
+  const raw = letters();
+  return `${raw.slice(0, 3)}-${raw.slice(3, 7)}-${raw.slice(7, 8)}${letters().slice(0, 2)}`;
+}
+
+function meetingChannelId(id) { return 'meeting:' + id; }
+function isMeetingChannelId(channelId) { return String(channelId || '').startsWith('meeting:'); }
+function meetingIdOfChannel(channelId) { return String(channelId || '').slice('meeting:'.length); }
+
+// Reunião viva (existe e não expirou) daquele canal — ou null.
+function meetingOfChannel(channelId) {
+  if (!isMeetingChannelId(channelId)) return null;
+  const m = meetings[meetingIdOfChannel(channelId)];
+  return (m && m.expiresAt > Date.now()) ? m : null;
+}
+
+// Esse socket pode agir dentro desse canal de reunião? (entrou por join-meeting)
+function socketInMeeting(socket, channelId) {
+  return !!socket.meetingId && meetingChannelId(socket.meetingId) === channelId && !!meetingOfChannel(channelId);
+}
+
+function closeMeeting(id, reason) {
+  const m = meetings[id];
+  if (!m) return;
+  delete meetings[id];
+  const chId = meetingChannelId(id);
+  io.to(chId).emit('meeting-closed', { meetingId: id, reason: reason || 'expired' });
+  // Derruba a sala de voz e libera o router SFU / música / chat da reunião.
+  (voiceUsers[chId] || []).forEach(u => {
+    const s = io.sockets.sockets.get(u.socketId);
+    if (s) {
+      s.leave(chId);
+      if (s.currentVoiceChannel === chId) s.currentVoiceChannel = null;
+      sfu.cleanupSocket(s.id);
+    }
+  });
+  delete voiceUsers[chId];
+  io.emit('update-voice-users', voiceUsers);
+  delete activeRoomStreams[chId];
+  delete messages[chId];
+  saveMessages();
+  destroyMusicIfRoomEmpty(chId);
+  sfu.closeRouterIfUnused(chId);
+  console.log(`[Reunião] ${id} encerrada (${reason || 'tempo esgotado'}).`);
+}
+
+// Varredor: avisa aos 5 minutos do fim e fecha quando o tempo acaba.
+setInterval(() => {
+  const now = Date.now();
+  Object.values(meetings).forEach(m => {
+    const remaining = m.expiresAt - now;
+    if (remaining <= 5 * 60 * 1000 && remaining > 0 && !m.warned) {
+      m.warned = true;
+      io.to(meetingChannelId(m.id)).emit('meeting-ending-soon', { minutes: 5 });
+    }
+    if (remaining <= 0) closeMeeting(m.id, 'expired');
+  });
+}, 30 * 1000);
 
 // ---------- Status visível (Disponível / Ausente / Ocupado) ----------
 // Guardado por nome (minúsculas) enquanto o servidor está de pé — não precisa
@@ -1195,8 +1273,66 @@ io.on('connection', (socket) => {
     }
   });
 
+  // ---------- Reuniões instantâneas ----------
+  // Criar não exige conta (dá pra criar direto da tela de login) — só um rate
+  // limit por IP pra ninguém virar gerador infinito de salas.
+  socket.on('create-meeting', (data, cb) => {
+    if (typeof cb !== 'function') return;
+    const ip = String(socket.handshake.headers['x-forwarded-for'] || socket.handshake.address || '').split(',')[0].trim();
+    const now = Date.now();
+    meetingCreationByIp[ip] = (meetingCreationByIp[ip] || []).filter(t => now - t < 10 * 60 * 1000);
+    if (meetingCreationByIp[ip].length >= 5) {
+      return cb({ error: 'rate-limited', message: 'Calma! Você criou reuniões demais — espera uns minutos.' });
+    }
+    meetingCreationByIp[ip].push(now);
+
+    let id;
+    do { id = generateMeetingId(); } while (meetings[id]);
+    meetings[id] = {
+      id,
+      createdAt: now,
+      expiresAt: now + MEETING_TTL_MS,
+      warned: false,
+      hostName: String((data && data.name) || '').trim().slice(0, 30)
+    };
+    console.log(`[Reunião] ${id} criada (${meetings[id].hostName || 'sem nome'}).`);
+    cb({ ok: true, meetingId: id, expiresAt: meetings[id].expiresAt });
+  });
+
+  // Entrar numa reunião: se já tem sessão logada usa o nome da conta; senão vira
+  // CONVIDADO — só o nome, sem conta, sem servidor, sem DM/amigos.
+  socket.on('join-meeting', (data, cb) => {
+    if (typeof cb !== 'function') return;
+    const id = String((data && data.meetingId) || '').trim().toLowerCase();
+    const m = meetings[id];
+    if (!m || m.expiresAt <= Date.now()) return cb({ error: 'not-found' });
+
+    const chId = meetingChannelId(id);
+    if ((voiceUsers[chId] || []).length >= MEETING_MAX_PEOPLE) {
+      return cb({ error: 'full', message: `Essa reunião está cheia (máximo ${MEETING_MAX_PEOPLE} pessoas).` });
+    }
+
+    let name = socket.username;
+    if (!name) {
+      name = String((data && data.name) || '').trim().slice(0, 30);
+      if (name.length < 2) return cb({ error: 'no-name', message: 'Digite um nome pra entrar.' });
+      // Nome repetido dentro da reunião ganha um sufixo — "Leo (2)".
+      const inRoom = (voiceUsers[chId] || []).map(u => String(u.name || '').trim().toLowerCase());
+      let finalName = name, n = 2;
+      while (inRoom.includes(finalName.toLowerCase())) finalName = `${name} (${n++})`;
+      name = finalName;
+      socket.username = name;
+      socket.usernameKey = 'guest:' + socket.id; // nunca colide com contas reais
+      socket.isGuest = true;
+      socket.role = 'guest';
+    }
+    socket.meetingId = id;
+    cb({ ok: true, meetingId: id, channelId: chId, name, expiresAt: m.expiresAt, isGuest: !!socket.isGuest });
+  });
+
   // Status escolhido no seletor do rodapé — replica pra todo mundo na hora.
   socket.on('set-status', (data) => {
+    if (socket.isGuest) return;
     if (!socket.usernameKey) return;
     const status = data && data.status;
     if (!VALID_STATUSES.includes(status)) return;
@@ -1206,7 +1342,7 @@ io.on('connection', (socket) => {
 
   // Status personalizado (texto livre curto). Texto vazio = limpar.
   socket.on('set-custom-status', (data) => {
-    if (!socket.usernameKey) return;
+    if (!socket.usernameKey || socket.isGuest) return;
     const text = String(data && data.text || '').trim().slice(0, 60);
     if (text) userCustomStatus[socket.usernameKey] = text;
     else delete userCustomStatus[socket.usernameKey];
@@ -1215,12 +1351,12 @@ io.on('connection', (socket) => {
 
   // ---------- Amigos ----------
   socket.on('get-friends', () => {
-    if (!socket.usernameKey) return;
+    if (!socket.usernameKey || socket.isGuest) return;
     socket.emit('friends-data', friendsPayloadFor(socket.usernameKey));
   });
 
   socket.on('friend-request', (data) => {
-    if (!socket.usernameKey) return;
+    if (!socket.usernameKey || socket.isGuest) return;
     const targetKey = keyOf(String(data && data.to || ''));
     if (!targetKey || targetKey === socket.usernameKey) return;
     if (!accounts[targetKey]) {
@@ -1252,7 +1388,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('friend-respond', (data) => {
-    if (!socket.usernameKey) return;
+    if (!socket.usernameKey || socket.isGuest) return;
     const fromKey = keyOf(String(data && data.from || ''));
     if (!fromKey || !(friendsData.requests[socket.usernameKey] || []).includes(fromKey)) return;
     if (data && data.accept) {
@@ -1269,7 +1405,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('friend-remove', (data) => {
-    if (!socket.usernameKey) return;
+    if (!socket.usernameKey || socket.isGuest) return;
     const targetKey = keyOf(String(data && data.name || ''));
     if (!targetKey) return;
     friendsData.friends[socket.usernameKey] =
@@ -1458,7 +1594,7 @@ io.on('connection', (socket) => {
   // Sem isso, só o rodapé de quem mudou o perfil atualizava (feito localmente);
   // a lista de voz e os cards do palco ficavam com os dados antigos até reconectar.
   socket.on('change-profile', (data) => {
-    if (!socket.username) return;
+    if (!socket.username || socket.isGuest) return;
     // O apelido da conta não muda mais (é o login). Só a foto.
     const avatarUrl = data && data.avatarUrl;
     socket.avatarUrl = avatarUrl || '';
@@ -1478,6 +1614,11 @@ io.on('connection', (socket) => {
   });
 
   socket.on('join-room', (roomId) => {
+    // Canal de reunião instantânea: entra quem passou pelo join-meeting.
+    if (isMeetingChannelId(roomId)) {
+      if (socketInMeeting(socket, roomId)) socket.join(roomId);
+      return;
+    }
     // Só entra na "sala" do socket.io (por onde as mensagens ao vivo circulam)
     // quem é membro do servidor daquele canal — e pode VER o canal (só-mods fica de fora).
     const srv = serverOfChannel(roomId);
@@ -1537,18 +1678,24 @@ io.on('connection', (socket) => {
       return; // nunca vira mensagem de chat de verdade
     }
 
-    // A mensagem só entra num canal que existe e de um servidor do qual essa
-    // pessoa é membro — nada de escrever em sala alheia.
-    const channel = channels.find(c => c.id === data.room);
-    if (!channel) return;
-    const srv = dspeakServers.find(s => s.id === channel.serverId);
-    if (!isMemberOfServer(srv, socket.username)) return;
-    // Canal só-de-mods: membro comum nem deveria estar aqui. Canal somente-leitura
-    // (tipo mural de avisos): todo mundo lê, mas só dono/moderador escreve.
-    if (!canSeeChannel(socket, channel, srv)) return;
-    if (channel.readOnly && !canManageServer(socket, srv)) {
-      socket.emit('action-denied', { message: 'Esse canal é somente leitura — só a staff do servidor pode postar aqui.' });
-      return;
+    // Chat de reunião instantânea: sem servidor e sem cargos — escreve quem
+    // está na reunião, enquanto ela existir.
+    if (isMeetingChannelId(data.room)) {
+      if (!socketInMeeting(socket, data.room)) return;
+    } else {
+      // A mensagem só entra num canal que existe e de um servidor do qual essa
+      // pessoa é membro — nada de escrever em sala alheia.
+      const channel = channels.find(c => c.id === data.room);
+      if (!channel) return;
+      const srv = dspeakServers.find(s => s.id === channel.serverId);
+      if (!isMemberOfServer(srv, socket.username)) return;
+      // Canal só-de-mods: membro comum nem deveria estar aqui. Canal somente-leitura
+      // (tipo mural de avisos): todo mundo lê, mas só dono/moderador escreve.
+      if (!canSeeChannel(socket, channel, srv)) return;
+      if (channel.readOnly && !canManageServer(socket, srv)) {
+        socket.emit('action-denied', { message: 'Esse canal é somente leitura — só a staff do servidor pode postar aqui.' });
+        return;
+      }
     }
 
     // O remetente é SEMPRE a identidade deste socket — nome/avatar não vêm mais do
@@ -1683,6 +1830,12 @@ io.on('connection', (socket) => {
   // entra ou troca de canal — é assim que o chat "individual por sala" sobrevive
   // a atualizações de página e é o mesmo pra todo mundo.
   socket.on('get-channel-history', (channelId) => {
+    // Chat da reunião: quem está nela pode puxar o histórico (curto) da própria sala.
+    if (isMeetingChannelId(channelId)) {
+      if (!socketInMeeting(socket, channelId)) return;
+      socket.emit('channel-history', { room: channelId, messages: messages[channelId] || [] });
+      return;
+    }
     // Histórico só pra membro do servidor dono do canal — sem isso, qualquer
     // conta nova conseguiria puxar as conversas do 'geral' sem ter convite.
     const srv = serverOfChannel(channelId);
@@ -1695,7 +1848,7 @@ io.on('connection', (socket) => {
 
   // ---------- Mensagens privadas (DM) ----------
   socket.on('send-dm', (data) => {
-    if (!socket.username) return;
+    if (!socket.username || socket.isGuest) return;
     const toUsername = String(data && data.toUsername || '').trim();
     const message = String(data && data.message || '').trim().slice(0, 2000);
     if (!toUsername || (!message && !(data && data.attachment) && !(data && data.callInvite))) return;
@@ -1839,7 +1992,7 @@ io.on('connection', (socket) => {
   // ---------- Criar um servidor novo (qualquer pessoa logada pode; quem cria vira
   // o dono DELE — com poder de promover Moderadores lá dentro) ----------
   socket.on('create-server', (data) => {
-    if (!socket.username) return;
+    if (!socket.username || socket.isGuest) return;
     const name = String(data && data.name || '').trim().slice(0, 60);
     if (!name) { socket.emit('server-create-failed', { message: 'Digite um nome pra esse servidor.' }); return; }
     const password = data && data.password ? String(data.password) : '';
@@ -1921,7 +2074,7 @@ io.on('connection', (socket) => {
 
   // ---------- Entrar num servidor existente via link/código de convite ----------
   socket.on('join-server-by-invite', (data) => {
-    if (!socket.username) return;
+    if (!socket.username || socket.isGuest) return;
     const inviteCode = String(data && data.inviteCode || '').trim();
     const password = data && data.password ? String(data.password) : '';
     const srv = dspeakServers.find(s => s.inviteCode === inviteCode);
@@ -2148,9 +2301,16 @@ io.on('connection', (socket) => {
       sfu.closeRouterIfUnused(oldChannel);
     }
 
-    // Voz também é só pra membro do servidor daquele canal (e canal só-de-mods
-    // não aceita membro comum nem por id direto).
-    {
+    // Sala de voz de reunião instantânea: entra quem passou pelo join-meeting —
+    // sem servidor, sem senha, sem cargo.
+    if (isMeetingChannelId(channelId)) {
+      if (!socketInMeeting(socket, channelId)) {
+        socket.emit('meeting-closed', { meetingId: meetingIdOfChannel(channelId), reason: 'expired' });
+        return;
+      }
+    } else {
+      // Voz também é só pra membro do servidor daquele canal (e canal só-de-mods
+      // não aceita membro comum nem por id direto).
       const srvOfCh = serverOfChannel(channelId);
       if (!isMemberOfServer(srvOfCh, socket.username || username)) return;
       if (!canSeeChannel(socket, channels.find(c => c.id === channelId), srvOfCh)) return;
@@ -2380,7 +2540,7 @@ io.on('connection', (socket) => {
 
   // Salva a fila atual da sala como uma playlist com nome.
   socket.on('playlist-save', (data) => {
-    if (!socket.usernameKey) return;
+    if (!socket.usernameKey || socket.isGuest) return;
     const name = String(data && data.name || '').trim().slice(0, 40);
     if (!name) return;
     const channelId = currentMusicChannelOf(socket);

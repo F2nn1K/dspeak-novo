@@ -84,6 +84,25 @@
 
     #auth-overlay { position: fixed; inset: 0; background: rgba(12, 13, 16, 0.95); backdrop-filter: blur(12px); z-index: 5000; display: none; align-items: center; justify-content: center; }
     #auth-overlay.visible { display: flex; }
+
+    /* ---- Reunião instantânea ---- */
+    #meeting-overlay { position: fixed; inset: 0; background: rgba(12, 13, 16, 0.95); backdrop-filter: blur(12px); z-index: 5000; align-items: center; justify-content: center; padding: 20px; }
+    /* Modo reunião: sem servidores, sem canais — só o palco da chamada. */
+    body.meeting-mode #servers-sidebar { display: none !important; }
+    body.meeting-mode #server-sidebar-content { display: none !important; }
+    body.meeting-mode #friends-btn { display: none !important; }
+    #meeting-bar {
+      display: none; align-items: center; justify-content: space-between; gap: 8px;
+      background: #13151b; padding: 10px 14px; border-bottom: 1px solid rgba(255, 85, 0, 0.15);
+    }
+    #meeting-bar .meeting-timer { font-size: 13px; font-weight: bold; color: #ffb347; display: flex; align-items: center; gap: 6px; }
+    #meeting-bar .meeting-timer.urgent { color: #ff5555; }
+    #meeting-copy-btn {
+      background: rgba(255,85,0,0.15); border: 1px solid rgba(255,85,0,0.4); color: #ff8844;
+      font-size: 12px; font-weight: bold; padding: 6px 12px; border-radius: 8px; cursor: pointer;
+      transition: background 0.15s;
+    }
+    #meeting-copy-btn:hover { background: rgba(255,85,0,0.3); }
     #session-replaced-overlay { position: fixed; inset: 0; background: rgba(12, 13, 16, 0.97); backdrop-filter: blur(12px); z-index: 6000; display: none; align-items: center; justify-content: center; text-align: center; padding: 20px; }
     #session-replaced-overlay.visible { display: flex; }
 
@@ -920,6 +939,46 @@
         <button class="btn-create" id="auth-submit-btn" onclick="connectToServer()" style="width: 100%;">Entrar</button>
         <button type="button" class="auth-forgot-link" id="auth-forgot-link" onclick="setAuthMode('forgot')">Esqueci a senha</button>
         <button type="button" class="auth-forgot-link" id="auth-back-login" onclick="setAuthMode('login')">Voltar ao login</button>
+
+        <!-- Reunião instantânea estilo Meet: gera um link /m/xxx e qualquer pessoa
+             entra só com o nome, sem conta — a sala dura 40 minutos. -->
+        <div style="display:flex; align-items:center; gap:10px; margin: 4px 0;">
+          <div style="flex:1; height:1px; background:rgba(255,255,255,0.08);"></div>
+          <span style="font-size:11px; color:#8a8f9d;">ou</span>
+          <div style="flex:1; height:1px; background:rgba(255,255,255,0.08);"></div>
+        </div>
+        <button type="button" class="btn-create" id="instant-meeting-btn" onclick="startInstantMeetingFromLogin()"
+          style="width:100%; background:transparent; border:1px solid rgba(255,85,0,0.5); color:#ff8844;">
+          🎥 Iniciar reunião instantânea
+        </button>
+        <div style="font-size:11px; color:#8a8f9d; text-align:center; margin-top:-6px;">Sem conta: você recebe um link de 40 min pra chamar qualquer pessoa.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ---------- Entrada de reunião instantânea (/m/xxx) ---------- -->
+  <div id="meeting-overlay" style="display:none;">
+    <div class="auth-card" style="max-width: 440px;">
+      <div class="auth-logo">REUNIÃO NO DSPEAK</div>
+
+      <div id="meeting-join-state" style="display:flex; flex-direction:column; gap:14px;">
+        <div style="font-size:13px; color:#8a8f9d; text-align:center; margin-top:-10px;">
+          Você foi convidado pra uma reunião de voz e vídeo.<br>Só digitar seu nome — sem conta, sem instalação.
+        </div>
+        <div id="meeting-error" style="display:none; color:#ff5555; font-size:13px; text-align:center;"></div>
+        <div class="modal-field">
+          <label>Seu nome</label>
+          <input type="text" id="meeting-name-input" placeholder="Como a galera te conhece?" maxlength="30" onkeypress="if(event.key==='Enter') submitMeetingJoin()" />
+        </div>
+        <button class="btn-create" id="meeting-join-btn" onclick="submitMeetingJoin()" style="width:100%;">Entrar na reunião</button>
+        <div style="font-size:11px; color:#8a8f9d; text-align:center;">Ao entrar, o navegador vai pedir permissão do microfone.</div>
+      </div>
+
+      <div id="meeting-closed-state" style="display:none; flex-direction:column; gap:16px; text-align:center;">
+        <div style="font-size:40px;">⏱️</div>
+        <div style="font-size:15px; color:#f2f3f5; font-weight:bold;" id="meeting-closed-title">Essa reunião já foi encerrada</div>
+        <div style="font-size:13px; color:#8a8f9d;">Reuniões instantâneas duram 40 minutos. Dá pra criar outra agora mesmo e mandar o link novo pra galera.</div>
+        <button class="btn-create" onclick="createAnotherMeeting()" style="width:100%;">🎥 Criar nova reunião</button>
       </div>
     </div>
   </div>
@@ -977,6 +1036,11 @@
     </div>
 
     <div class="discord-deck">
+      <!-- Barra da reunião instantânea: cronômetro dos 40 min + copiar o link. -->
+      <div id="meeting-bar">
+        <span class="meeting-timer" id="meeting-timer">⏱ <span id="meeting-countdown">40:00</span></span>
+        <button id="meeting-copy-btn" onclick="copyMeetingLink()">🔗 Copiar link</button>
+      </div>
       <div class="voice-connection-panel" id="voice-connection-panel">
         <div class="voice-status-info">
           <span class="voice-status-title">
@@ -1823,6 +1887,22 @@
       // servidor reiniciou num deploy) — limpa e deixa o rejoin reabrir tudo.
       sfuHandleReconnect();
 
+      // Modo reunião: reconectou (rede piscou / deploy)? Re-entra na mesma
+      // reunião com o mesmo nome e volta pra voz — sem conta envolvida.
+      if (MEETING_MODE_ID && meetingJoinedName) {
+        socket.emit('join-meeting', { meetingId: MEETING_MODE_ID, name: meetingJoinedName }, (res) => {
+          if (res && res.ok) {
+            username = res.name;
+            meetingExpiresAt = res.expiresAt;
+            hideReconnectOverlay();
+            connectVoice({ id: res.channelId, name: 'Reunião instantânea', type: 'voice' });
+          } else {
+            showMeetingClosedState();
+          }
+        });
+        return;
+      }
+
       if (!username || !sessionToken) return; // ainda na tela de login — o fluxo normal cuida disso
 
       // Se reconectamos, o servidor esqueceu quem éramos (novo socket.id) — precisa
@@ -2359,6 +2439,16 @@
       const stayInput = document.getElementById('stay-logged-input');
       if (stayInput) stayInput.checked = wantsStayLoggedIn();
 
+      // Link de reunião (/m/xxx): entra sempre como convidado, só com o nome —
+      // nada de auto-login nem tela de conta.
+      if (MEETING_MODE_ID) {
+        const mi = document.getElementById('meeting-name-input');
+        mi.value = localStorage.getItem('dspeak_meeting_name') || localStorage.getItem('dspeak_username') || '';
+        document.getElementById('meeting-overlay').style.display = 'flex';
+        setTimeout(() => mi.focus(), 150);
+        return;
+      }
+
       const savedUser = localStorage.getItem('dspeak_username');
       const savedAvatar = localStorage.getItem('dspeak_avatar');
       sessionToken = readStoredToken();
@@ -2522,6 +2612,138 @@
       micSenders = {};
       reconnectPeersInCurrentChannel(++voiceConnectionGeneration);
     }
+
+    // ---------- Reunião instantânea (estilo Meet) ----------
+    // URL /m/abc-defg-hij = modo reunião: sem conta, sem servidores — a pessoa
+    // digita um nome e cai direto na sala de voz da reunião (que dura 40 min).
+    const MEETING_MODE_ID = (() => {
+      const m = location.pathname.match(/^\/m\/([a-z0-9-]{4,40})/i);
+      return m ? m[1].toLowerCase() : null;
+    })();
+    let meetingJoinedName = '';    // nome confirmado pelo servidor (pra rejoin em reconexão)
+    let meetingExpiresAt = 0;
+    let meetingCountdownTimer = null;
+
+    function showMeetingError(msg) {
+      const el = document.getElementById('meeting-error');
+      el.textContent = msg;
+      el.style.display = 'block';
+    }
+
+    function submitMeetingJoin() {
+      const name = document.getElementById('meeting-name-input').value.trim();
+      if (name.length < 2) { showMeetingError('Digite um nome com pelo menos 2 letras.'); return; }
+      localStorage.setItem('dspeak_meeting_name', name);
+      document.getElementById('meeting-join-btn').disabled = true;
+      socket.emit('join-meeting', { meetingId: MEETING_MODE_ID, name }, (res) => {
+        document.getElementById('meeting-join-btn').disabled = false;
+        if (!res || !res.ok) {
+          if (res && res.error === 'not-found') { showMeetingClosedState(); return; }
+          showMeetingError((res && res.message) || 'Não deu pra entrar — tenta de novo.');
+          return;
+        }
+        startMeetingSession(res);
+      });
+    }
+
+    function startMeetingSession(res) {
+      username = res.name;
+      meetingJoinedName = res.name;
+      meetingExpiresAt = res.expiresAt;
+      sessionStarted = true;
+      document.body.classList.add('meeting-mode');
+      document.getElementById('meeting-overlay').style.display = 'none';
+      document.getElementById('auth-overlay').style.display = 'none';
+      hideReconnectOverlay();
+
+      getUiAudioCtx();
+      updateUserProfileUI();
+      fetchAudioDevices();
+      startPingLoop();
+      setupStageDockAutoHide();
+
+      // Barra com o cronômetro + copiar link.
+      document.getElementById('meeting-bar').style.display = 'flex';
+      startMeetingCountdown();
+
+      // Chat lateral da reunião (mesmo chat de sala de voz de sempre).
+      activeChannel = res.channelId;
+      document.getElementById('chat-header-title').textContent = '🔊 Reunião';
+      switchWorkspaceLayout(true);
+      loadChannelMessages(res.channelId);
+
+      // Entra na voz — todo o caminho (mic, SFU, tela, câmera) é o mesmo do app.
+      connectVoice({ id: res.channelId, name: 'Reunião instantânea', type: 'voice' });
+      showToast('Você entrou na reunião! Manda o link pra quem quiser chamar.');
+    }
+
+    function startMeetingCountdown() {
+      clearInterval(meetingCountdownTimer);
+      meetingCountdownTimer = setInterval(() => {
+        const remaining = meetingExpiresAt - Date.now();
+        const el = document.getElementById('meeting-countdown');
+        if (remaining <= 0) {
+          clearInterval(meetingCountdownTimer);
+          el.textContent = '0:00';
+          return; // o servidor manda o meeting-closed — a tela de fim vem por ele
+        }
+        const min = Math.floor(remaining / 60000);
+        const sec = Math.floor((remaining % 60000) / 1000);
+        el.textContent = `${min}:${String(sec).padStart(2, '0')}`;
+        document.getElementById('meeting-timer').classList.toggle('urgent', remaining <= 5 * 60 * 1000);
+      }, 1000);
+    }
+
+    function copyMeetingLink() {
+      const link = location.origin + '/m/' + MEETING_MODE_ID;
+      navigator.clipboard.writeText(link).then(
+        () => showToast('Link da reunião copiado! É só mandar pra pessoa.'),
+        () => prompt('Copia o link da reunião:', link)
+      );
+    }
+
+    function showMeetingClosedState() {
+      document.getElementById('meeting-join-state').style.display = 'none';
+      document.getElementById('meeting-closed-state').style.display = 'flex';
+      document.getElementById('meeting-overlay').style.display = 'flex';
+    }
+
+    // Cria uma reunião nova (da tela de login ou da tela de "tempo esgotado")
+    // e navega direto pro link dela.
+    function createMeetingAndGo(btn) {
+      if (btn) btn.disabled = true;
+      socket.emit('create-meeting', { name: localStorage.getItem('dspeak_meeting_name') || localStorage.getItem('dspeak_username') || '' }, (res) => {
+        if (btn) btn.disabled = false;
+        if (!res || !res.ok) {
+          showToast((res && res.message) || 'Não deu pra criar a reunião agora — tenta de novo.');
+          return;
+        }
+        location.href = '/m/' + res.meetingId;
+      });
+    }
+    function startInstantMeetingFromLogin() { createMeetingAndGo(document.getElementById('instant-meeting-btn')); }
+    function createAnotherMeeting() { createMeetingAndGo(null); }
+
+    // Faltam 5 minutos: todo mundo na sala fica sabendo.
+    socket.on('meeting-ending-soon', (data) => {
+      showToast(`⏱ A reunião termina em ${(data && data.minutes) || 5} minutos! Pra continuar depois, crie um link novo.`);
+      playSound('mute');
+    });
+
+    // Tempo esgotado (ou reunião não existe mais): desliga tudo e mostra a
+    // tela de fim com o botão de criar outra.
+    socket.on('meeting-closed', () => {
+      if (!MEETING_MODE_ID) return;
+      clearInterval(meetingCountdownTimer);
+      if (connectedVoiceChannel) {
+        connectedVoiceChannel = null;
+        connectedVoiceChannelPassword = null;
+        teardownVoiceConnectionState();
+      }
+      document.getElementById('meeting-bar').style.display = 'none';
+      document.getElementById('meeting-closed-title').textContent = 'A reunião chegou aos 40 minutos';
+      showMeetingClosedState();
+    });
 
     function startAppAfterAuth() {
       if (sessionStarted) {
