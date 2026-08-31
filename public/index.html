@@ -1021,7 +1021,7 @@
         <div style="font-size:15px; color:#f2f3f5; font-weight:bold;" id="meeting-closed-title">Essa reunião já foi encerrada</div>
         <div style="font-size:13px; color:#8a8f9d;">Reuniões instantâneas duram 40 minutos. Dá pra criar outra agora mesmo e mandar o link novo pra galera.</div>
         <button class="btn-create" onclick="createAnotherMeeting()" style="width:100%;">🎥 Criar nova reunião</button>
-        <button onclick="location.href='/'" style="width:100%; background:transparent; border:1px solid #3a3d47; color:#c8cbd4; font-size:13px; font-weight:bold; padding:10px; border-radius:8px; cursor:pointer;">← Voltar para o site</button>
+        <button id="meeting-back-btn" onclick="exitMeetingToHome()" style="width:100%; background:transparent; border:1px solid #3a3d47; color:#c8cbd4; font-size:13px; font-weight:bold; padding:10px; border-radius:8px; cursor:pointer;">← Voltar para o site</button>
       </div>
     </div>
   </div>
@@ -2749,10 +2749,20 @@
       socket.emit('end-meeting');
     }
 
+    // Rodando dentro do app (celular ou desktop)? Aí não existe "site" — o
+    // botão de sair da reunião leva de volta pra tela de login do app.
+    const IS_INSIDE_APP = /DSpeakMobile|Electron/i.test(navigator.userAgent);
+
+    function exitMeetingToHome() {
+      location.href = IS_INSIDE_APP ? '/app' : '/';
+    }
+
     function showMeetingClosedState() {
       document.getElementById('meeting-join-state').style.display = 'none';
       document.getElementById('meeting-closed-state').style.display = 'flex';
       document.getElementById('meeting-overlay').style.display = 'flex';
+      const backBtn = document.getElementById('meeting-back-btn');
+      if (backBtn && IS_INSIDE_APP) backBtn.textContent = '← Voltar para o login';
     }
 
     // Cria uma reunião nova (da tela de login ou da tela de "tempo esgotado")
