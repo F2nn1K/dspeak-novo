@@ -10,6 +10,7 @@ dm-messages.json
 users.json
 uploads/
 music.json
+push.json
 
 # Instalador do app desktop (106MB — sobe pra VPS via scp, não pelo git)
 downloads/

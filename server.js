@@ -19,6 +19,15 @@ const io = new Server(server, {
   pingInterval: 25000
 });
 
+// express.static ignora diretórios iniciados por ponto por padrão; App Links exige
+// exatamente este caminho público.
+app.get('/.well-known/assetlinks.json', (req, res) => {
+  res.type('application/json').sendFile(
+    path.join(__dirname, 'public', '.well-known', 'assetlinks.json'),
+    { dotfiles: 'allow' }
+  );
+});
+
 // index: false — sem isso, o express.static entregava o index.html direto na
 // raiz e as rotas abaixo (landing page x app) nunca rodavam.
 app.use(express.static(path.join(__dirname, 'public'), { index: false }));
@@ -462,6 +471,23 @@ function broadcastCustomStatuses() {
   io.emit('user-custom-statuses', userCustomStatus);
 }
 
+// Push fica opcional até existirem credenciais Firebase. Mesmo desativado,
+// tokens e preferências já podem ser registrados sem quebrar clientes antigos.
+const PUSH_ENABLED = process.env.FIREBASE_PUSH_ENABLED === '1';
+const PUSH_FILE = path.join(DATA_DIR, 'push.json');
+let pushState = { devices: {}, preferences: {} };
+try {
+  if (fs.existsSync(PUSH_FILE)) pushState = JSON.parse(fs.readFileSync(PUSH_FILE, 'utf8'));
+} catch (e) {
+  console.error('[DSpeak] Não foi possível ler push.json:', e.message);
+}
+function savePushState() {
+  if (!persistenceReady) return;
+  if (db.enabled) db.saveKvDebounced('push', pushState);
+  else saveJsonDebounced(PUSH_FILE, () => pushState);
+}
+registerFlushable(PUSH_FILE, () => pushState);
+
 // ---------- Ouvir junto (YouTube / Spotify oficiais) ----------
 // Estado por sala de voz. O áudio NÃO é baixado nem retransmitido pelo servidor —
 // só a fila/play/pause/posição. Cada cliente toca no player oficial (iframe).
@@ -740,6 +766,8 @@ const DEFAULT_SERVER = {
   passwordHash: null,
   inviteCode: null, // gerado no boot se ainda não existir
   members: [],
+  roleDefinitions: [],
+  memberRoleIds: {},
   membersMigrated: false // vira true depois da migração única das contas antigas
 };
 
@@ -792,6 +820,53 @@ function isMemberOfServer(srv, username) {
   return srv.ownerUsername === key || (srv.members || []).includes(key);
 }
 
+const SERVER_PERMISSION_KEYS = [
+  'manageChannels', 'moderateMembers', 'manageInvites',
+  'manageMessages', 'manageRoles', 'serverMute'
+];
+const MODERATOR_PERMISSIONS = Object.fromEntries(SERVER_PERMISSION_KEYS.map(k => [k, true]));
+
+function ensureServerRoleModel(srv) {
+  if (!srv) return;
+  if (!Array.isArray(srv.roleDefinitions)) srv.roleDefinitions = [];
+  if (!srv.memberRoleIds || typeof srv.memberRoleIds !== 'object' || Array.isArray(srv.memberRoleIds)) {
+    srv.memberRoleIds = {};
+  }
+  // Migração compatível: moderadores antigos recebem um cargo interno equivalente.
+  let legacy = srv.roleDefinitions.find(r => r && r.id === 'legacy-moderator');
+  if (!legacy) {
+    legacy = {
+      id: 'legacy-moderator', name: 'Moderador', color: '#00ffcc',
+      position: 100, permissions: { ...MODERATOR_PERMISSIONS }, managed: true
+    };
+    srv.roleDefinitions.push(legacy);
+  }
+  for (const memberKey of (srv.moderators || [])) {
+    const current = Array.isArray(srv.memberRoleIds[memberKey]) ? srv.memberRoleIds[memberKey] : [];
+    if (!current.includes(legacy.id)) srv.memberRoleIds[memberKey] = [...current, legacy.id];
+  }
+}
+
+function permissionsForMember(srv, username) {
+  ensureServerRoleModel(srv);
+  const key = keyOf(username);
+  const ids = (srv.memberRoleIds && Array.isArray(srv.memberRoleIds[key])) ? srv.memberRoleIds[key] : [];
+  const out = {};
+  for (const id of ids) {
+    const def = srv.roleDefinitions.find(r => r && r.id === id);
+    if (!def) continue;
+    for (const perm of SERVER_PERMISSION_KEYS) {
+      if (def.permissions && def.permissions[perm]) out[perm] = true;
+    }
+  }
+  return out;
+}
+
+function hasServerPermission(socket, srv, permission) {
+  if (isOwnerOfServer(socket, srv)) return true;
+  return !!permissionsForMember(srv, socket && socket.username)[permission];
+}
+
 // Dono de um servidor específico: o servidor padrão usa o Owner GLOBAL (sistema já
 // existente, roles.json); servidores criados por usuários usam o ownerUsername
 // próprio deles.
@@ -826,7 +901,7 @@ function serverOfChannel(channelId) {
 // Qualquer um continua podendo ADICIONAR na fila — só não atropela os outros.
 function canControlMusic(socket, channelId) {
   const srv = serverOfChannel(channelId);
-  if (srv && canManageServer(socket, srv)) return true;
+  if (srv && (isOwnerOfServer(socket, srv) || hasServerPermission(socket, srv, 'manageMessages'))) return true;
   const session = roomMusic[channelId];
   const current = session && session.queue.find(i => i.id === session.currentId);
   return !!(current && current.addedBy && socket.username &&
@@ -852,7 +927,10 @@ function sanitizeChannelForClient(ch) {
 function canSeeChannel(socket, ch, srv) {
   if (!ch) return false;
   if (!ch.modsOnly) return true;
-  return canManageServer(socket, srv || dspeakServers.find(s => s.id === ch.serverId));
+  const server = srv || dspeakServers.find(s => s.id === ch.serverId);
+  return isOwnerOfServer(socket, server) ||
+    hasServerPermission(socket, server, 'manageChannels') ||
+    hasServerPermission(socket, server, 'manageMessages');
 }
 
 function visibleChannelsFor(socket, srv) {
@@ -865,7 +943,9 @@ function sendMyServers(socket) {
   const username = socket.username;
   const mine = dspeakServers
     .filter(srv => isMemberOfServer(srv, username))
-    .map(srv => ({
+    .map(srv => {
+      ensureServerRoleModel(srv);
+      return ({
       id: srv.id,
       name: srv.name,
       iconUrl: srv.iconUrl || null,
@@ -873,15 +953,45 @@ function sendMyServers(socket) {
       isOwner: isOwnerOfServer(socket, srv),
       isModerator: isModeratorOfServer(socket, srv),
       moderators: srv.moderators || [],
-      inviteCode: canManageServer(socket, srv) ? srv.inviteCode : undefined, // dono e mods veem o código de convite
+      roleDefinitions: srv.roleDefinitions || [],
+      memberRoleIds: srv.memberRoleIds || {},
+      myPermissions: permissionsForMember(srv, socket.username),
+      inviteCode: (isOwnerOfServer(socket, srv) || hasServerPermission(socket, srv, 'manageInvites'))
+        ? srv.inviteCode : undefined,
       channels: visibleChannelsFor(socket, srv)
-    }));
+      });
+    });
   socket.emit('my-servers', mine);
 }
 
 function generateServerId(name) {
   const base = String(name || 'servidor').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'servidor';
   return `${base}-${crypto.randomBytes(4).toString('hex')}`;
+}
+
+function activeInviteByCode(code) {
+  const now = Date.now();
+  for (const srv of dspeakServers) {
+    const invite = (srv.invites || []).find(i => i.code === code && !i.revoked &&
+      (!i.expiresAt || i.expiresAt > now) && (!i.maxUses || Number(i.uses || 0) < i.maxUses));
+    if (invite) return { srv, invite };
+    // Convite permanente legado continua válido.
+    if (srv.inviteCode === code) return { srv, invite: null };
+  }
+  return null;
+}
+
+function publicInvite(invite) {
+  return {
+    code: invite.code,
+    channelId: invite.channelId || null,
+    createdBy: invite.createdBy,
+    createdAt: invite.createdAt,
+    expiresAt: invite.expiresAt || 0,
+    maxUses: invite.maxUses || 0,
+    uses: invite.uses || 0,
+    revoked: !!invite.revoked
+  };
 }
 
 // ---------- Cargos (Owner / Moderador / Membro / Guest) ----------
@@ -1189,6 +1299,9 @@ function attachUserSession(socket, username, avatarUrl) {
   if (socket.usernameKey) socket.emit('friends-data', friendsPayloadFor(socket.usernameKey));
 }
 
+const chatRateByUser = new Map();
+const slowModeLastSend = new Map();
+
 io.on('connection', (socket) => {
   console.log('Cliente conectado:', socket.id);
 
@@ -1369,6 +1482,58 @@ io.on('connection', (socket) => {
     if (text) userCustomStatus[socket.usernameKey] = text;
     else delete userCustomStatus[socket.usernameKey];
     broadcastCustomStatuses();
+  });
+
+  socket.on('register-push-token', (data, cb) => {
+    const done = typeof cb === 'function' ? cb : () => {};
+    if (!socket.usernameKey || socket.isGuest) return done({ ok: false });
+    const token = String(data && data.token || '').trim().slice(0, 4096);
+    if (!token) return done({ ok: false, error: 'Token inválido.' });
+    const list = Array.isArray(pushState.devices[socket.usernameKey])
+      ? pushState.devices[socket.usernameKey] : [];
+    const withoutSame = list.filter(d => d.token !== token);
+    withoutSame.push({
+      token, platform: String(data.platform || 'android').slice(0, 20),
+      updatedAt: Date.now()
+    });
+    pushState.devices[socket.usernameKey] = withoutSame.slice(-5);
+    savePushState();
+    done({ ok: true, enabled: PUSH_ENABLED });
+  });
+
+  socket.on('revoke-push-token', (data, cb) => {
+    const done = typeof cb === 'function' ? cb : () => {};
+    if (!socket.usernameKey) return done({ ok: false });
+    const token = String(data && data.token || '');
+    pushState.devices[socket.usernameKey] =
+      (pushState.devices[socket.usernameKey] || []).filter(d => d.token !== token);
+    savePushState();
+    done({ ok: true });
+  });
+
+  socket.on('get-notification-preferences', (cb) => {
+    const done = typeof cb === 'function' ? cb : () => {};
+    if (!socket.usernameKey) return done({ ok: false });
+    done({
+      ok: true,
+      pushEnabled: PUSH_ENABLED,
+      preferences: {
+        dm: true, mention: true, friendship: true, invite: true, raisedHand: true,
+        ...(pushState.preferences[socket.usernameKey] || {})
+      }
+    });
+  });
+
+  socket.on('set-notification-preferences', (data, cb) => {
+    const done = typeof cb === 'function' ? cb : () => {};
+    if (!socket.usernameKey || socket.isGuest) return done({ ok: false });
+    const input = data && data.preferences && typeof data.preferences === 'object'
+      ? data.preferences : {};
+    pushState.preferences[socket.usernameKey] = Object.fromEntries(
+      ['dm', 'mention', 'friendship', 'invite', 'raisedHand'].map(k => [k, input[k] !== false])
+    );
+    savePushState();
+    done({ ok: true, pushEnabled: PUSH_ENABLED });
   });
 
   // ---------- Amigos ----------
@@ -1652,15 +1817,45 @@ io.on('connection', (socket) => {
   // Avisa todo mundo quando alguém muta/desmuta ou ensurdece/desensurdece, pra
   // aparecer o iconezinho certo no avatar dessa pessoa pros outros também.
   socket.on('update-voice-status', (data) => {
-    const muted = !!(data && data.muted);
+    const muted = !!(data && data.muted) || !!socket.currentServerMuted;
     const deafened = !!(data && data.deafened);
     socket.currentMuted = muted;
     socket.currentDeafened = deafened;
     Object.keys(voiceUsers).forEach(channelId => {
       voiceUsers[channelId] = voiceUsers[channelId].map(u =>
-        u.socketId === socket.id ? { ...u, muted, deafened } : u
+        u.socketId === socket.id ? { ...u, muted, deafened, serverMuted: !!socket.currentServerMuted } : u
       );
     });
+    io.emit('update-voice-users', voiceUsers);
+  });
+
+  socket.on('raise-hand', (data) => {
+    const raisedHand = !!(data && data.raised);
+    socket.currentRaisedHand = raisedHand;
+    Object.keys(voiceUsers).forEach(channelId => {
+      voiceUsers[channelId] = voiceUsers[channelId].map(u =>
+        u.socketId === socket.id ? { ...u, raisedHand } : u
+      );
+    });
+    io.emit('update-voice-users', voiceUsers);
+  });
+
+  socket.on('server-mute-user', (data) => {
+    const target = io.sockets.sockets.get(data && data.targetSocketId);
+    if (!target) return;
+    const channelId = Object.keys(voiceUsers).find(id =>
+      (voiceUsers[id] || []).some(u => u.socketId === target.id));
+    const srv = channelId && serverOfChannel(channelId);
+    if (!srv || (!isOwnerOfServer(socket, srv) && !hasServerPermission(socket, srv, 'serverMute'))) return;
+    if (isOwnerOfServer(target, srv)) return;
+    target.currentServerMuted = !!data.muted;
+    if (target.currentServerMuted) target.currentMuted = true;
+    voiceUsers[channelId] = voiceUsers[channelId].map(u =>
+      u.socketId === target.id
+        ? { ...u, muted: target.currentServerMuted || !!target.currentMuted, serverMuted: target.currentServerMuted }
+        : u
+    );
+    target.emit('force-server-muted', { muted: target.currentServerMuted });
     io.emit('update-voice-users', voiceUsers);
   });
 
@@ -1676,7 +1871,18 @@ io.on('connection', (socket) => {
     // QUALQUER payload que o cliente mandasse, sem validar nada.
     if (!socket.username || !data || typeof data.room !== 'string') return;
     const messageText = String(data.message || '').slice(0, 2000);
-    if (!messageText.trim() && !data.attachment) return;
+    const pollInput = data.poll && typeof data.poll === 'object' ? data.poll : null;
+    if (!messageText.trim() && !data.attachment && !pollInput) return;
+
+    // Antispam geral: no máximo 8 mensagens em 10 segundos por conta.
+    const now = Date.now();
+    const recent = (chatRateByUser.get(socket.usernameKey) || []).filter(t => now - t < 10000);
+    if (recent.length >= 8) {
+      socket.emit('action-denied', { message: 'Você está enviando rápido demais. Aguarde alguns segundos.' });
+      return;
+    }
+    recent.push(now);
+    chatRateByUser.set(socket.usernameKey, recent);
 
     // Comando secreto pra virar Owner: "!owner SEU_CODIGO". Nunca é salvo no
     // histórico nem retransmitido pro chat — só o autor recebe a confirmação —
@@ -1711,10 +1917,23 @@ io.on('connection', (socket) => {
       if (!channel) return;
       const srv = dspeakServers.find(s => s.id === channel.serverId);
       if (!isMemberOfServer(srv, socket.username)) return;
+      const slowSeconds = Math.max(0, Number(channel.slowModeSeconds) || 0);
+      if (slowSeconds && !isOwnerOfServer(socket, srv) &&
+          !hasServerPermission(socket, srv, 'manageMessages')) {
+        const slowKey = `${socket.usernameKey}:${channel.id}`;
+        const last = slowModeLastSend.get(slowKey) || 0;
+        const remaining = slowSeconds * 1000 - (now - last);
+        if (remaining > 0) {
+          socket.emit('action-denied', { message: `Modo lento: aguarde ${Math.ceil(remaining / 1000)}s.` });
+          return;
+        }
+        slowModeLastSend.set(slowKey, now);
+      }
       // Canal só-de-mods: membro comum nem deveria estar aqui. Canal somente-leitura
       // (tipo mural de avisos): todo mundo lê, mas só dono/moderador escreve.
       if (!canSeeChannel(socket, channel, srv)) return;
-      if (channel.readOnly && !canManageServer(socket, srv)) {
+      if (channel.readOnly && !isOwnerOfServer(socket, srv) &&
+          !hasServerPermission(socket, srv, 'manageMessages')) {
         socket.emit('action-denied', { message: 'Esse canal é somente leitura — só a staff do servidor pode postar aqui.' });
         return;
       }
@@ -1732,14 +1951,38 @@ io.on('connection', (socket) => {
       time: typeof data.time === 'string' ? data.time.slice(0, 20) : undefined,
       date: typeof data.date === 'string' ? data.date.slice(0, 20) : undefined,
       role: socket.role,
+      replyToId: data.replyToId && findMessageById(data.room, data.replyToId) ? data.replyToId : null,
       reactions: {},
       timestamp: Date.now()
     };
+    if (pollInput) {
+      const question = String(pollInput.question || '').trim().slice(0, 180);
+      const options = (Array.isArray(pollInput.options) ? pollInput.options : [])
+        .map(v => String(v || '').trim().slice(0, 80)).filter(Boolean).slice(0, 8);
+      if (!question || options.length < 2) return;
+      entry.poll = { question, options: options.map((text, index) => ({ id: String(index + 1), text, votes: [] })) };
+    }
     if (!messages[data.room]) messages[data.room] = [];
     messages[data.room].push(entry);
     pruneChannelMessages(data.room);
     saveMessages();
     io.to(data.room).emit('chat-message', entry);
+  });
+
+  socket.on('vote-poll', (data) => {
+    if (!socket.username || !data) return;
+    const entry = findMessageById(data.room, data.messageId);
+    if (!entry || !entry.poll || !Array.isArray(entry.poll.options)) return;
+    const chosen = entry.poll.options.find(o => o.id === String(data.optionId));
+    if (!chosen) return;
+    for (const option of entry.poll.options) {
+      option.votes = (option.votes || []).filter(k => k !== socket.usernameKey);
+    }
+    chosen.votes.push(socket.usernameKey);
+    saveMessages();
+    io.to(data.room).emit('poll-updated', {
+      room: data.room, messageId: entry.id, poll: entry.poll
+    });
   });
 
   // ---------- Editar / apagar mensagens e reações ----------
@@ -1768,8 +2011,10 @@ io.on('connection', (socket) => {
     const entry = findMessageById(data.room, data.messageId);
     if (!entry) return;
     const isAuthor = keyOf(entry.user) === socket.usernameKey;
+    const messageSrv = serverOfChannel(data.room);
     const isMod = socket.role === 'owner' || socket.role === 'moderator'
-      || canManageServer(socket, serverOfChannel(data.room));
+      || (messageSrv && (isOwnerOfServer(socket, messageSrv) ||
+        hasServerPermission(socket, messageSrv, 'manageMessages')));
     if (!isAuthor && !isMod) return;
     messages[data.room] = messages[data.room].filter(m => m.id !== entry.id);
     saveMessages();
@@ -1806,7 +2051,8 @@ io.on('connection', (socket) => {
     const ch = channels.find(c => c.id === data.room);
     const srv = ch && dspeakServers.find(s => s.id === ch.serverId);
     const isGlobalMod = socket.role === 'owner' || socket.role === 'moderator';
-    if (!srv || (!canManageServer(socket, srv) && !isGlobalMod)) return;
+    if (!srv || (!isOwnerOfServer(socket, srv) &&
+        !hasServerPermission(socket, srv, 'manageMessages') && !isGlobalMod)) return;
     const entry = findMessageById(data.room, data.messageId);
     if (!entry) return;
     entry.pinned = !!data.pinned;
@@ -1933,7 +2179,7 @@ io.on('connection', (socket) => {
   socket.on('create-channel', (data) => {
     const serverId = data && data.serverId;
     const srv = dspeakServers.find(s => s.id === serverId);
-    if (!srv || !canManageServer(socket, srv)) return;
+    if (!srv || (!isOwnerOfServer(socket, srv) && !hasServerPermission(socket, srv, 'manageChannels'))) return;
     const name = String(data && data.name || '').trim();
     const type = data && data.type;
     if (!name || (type !== 'text' && type !== 'voice')) return;
@@ -1945,7 +2191,11 @@ io.on('connection', (socket) => {
     // Permissões por canal: "só mods veem" (qualquer tipo) e "somente leitura —
     // só mods escrevem" (faz sentido só em canal de texto).
     channel.modsOnly = !!(data && data.modsOnly);
-    if (type === 'text') channel.readOnly = !!(data && data.readOnly);
+    if (type === 'text') {
+      channel.readOnly = !!(data && data.readOnly);
+      channel.slowModeSeconds = Math.max(0, Math.min(21600,
+        Math.floor(Number(data && data.slowModeSeconds) || 0)));
+    }
     if (type === 'voice') {
       const userLimit = parseInt(data && data.userLimit, 10);
       channel.userLimit = (Number.isFinite(userLimit) && userLimit > 0) ? userLimit : 0; // 0 = sem limite
@@ -1964,7 +2214,7 @@ io.on('connection', (socket) => {
     const ch = channels.find(c => c.id === channelId);
     if (!ch) return;
     const srv = dspeakServers.find(s => s.id === ch.serverId);
-    if (!canManageServer(socket, srv)) return;
+    if (!isOwnerOfServer(socket, srv) && !hasServerPermission(socket, srv, 'manageChannels')) return;
 
     const newName = String(data && data.newName || '').trim();
     if (newName && !ch.locked) ch.name = newName; // canais travados (ex: "geral") não podem ser renomeados
@@ -1975,6 +2225,9 @@ io.on('connection', (socket) => {
     }
     if (ch.type === 'text' && data && Object.prototype.hasOwnProperty.call(data, 'readOnly')) {
       ch.readOnly = !!data.readOnly;
+    }
+    if (ch.type === 'text' && data && Object.prototype.hasOwnProperty.call(data, 'slowModeSeconds')) {
+      ch.slowModeSeconds = Math.max(0, Math.min(21600, Math.floor(Number(data.slowModeSeconds) || 0)));
     }
 
     if (ch.type === 'voice') {
@@ -2001,7 +2254,7 @@ io.on('connection', (socket) => {
     const ch = channels.find(c => c.id === channelId);
     if (!ch || ch.undeletable) return; // "geral" e "Lobby" nunca podem ser excluídos
     const srv = dspeakServers.find(s => s.id === ch.serverId);
-    if (!canManageServer(socket, srv)) return;
+    if (!isOwnerOfServer(socket, srv) && !hasServerPermission(socket, srv, 'manageChannels')) return;
     if (channels.filter(c => c.serverId === ch.serverId).length <= 1) return;
 
     channels = channels.filter(c => c.id !== channelId);
@@ -2037,7 +2290,9 @@ io.on('connection', (socket) => {
       passwordHash: password ? hashServerPassword(password) : null,
       inviteCode: crypto.randomBytes(8).toString('hex'),
       members: [socket.usernameKey],
-      moderators: []
+      moderators: [],
+      roleDefinitions: [],
+      memberRoleIds: {}
     };
     dspeakServers.push(srv);
     saveServers();
@@ -2094,13 +2349,65 @@ io.on('connection', (socket) => {
     }
   });
 
+  // ---------- Convites avançados: múltiplos, revogáveis, com validade/usos/canal ----------
+  socket.on('create-server-invite', (data, cb) => {
+    const done = typeof cb === 'function' ? cb : () => {};
+    const srv = dspeakServers.find(s => s.id === (data && data.serverId));
+    if (!srv || (!isOwnerOfServer(socket, srv) && !hasServerPermission(socket, srv, 'manageInvites'))) {
+      return done({ ok: false, error: 'Você não pode criar convites.' });
+    }
+    const channelId = String(data && data.channelId || '');
+    if (channelId) {
+      const ch = channels.find(c => c.id === channelId && c.serverId === srv.id && c.type === 'voice');
+      if (!ch) return done({ ok: false, error: 'Canal de voz inválido.' });
+    }
+    const durationMinutes = Math.max(0, Math.min(43200, Number(data && data.durationMinutes) || 0));
+    const maxUses = Math.max(0, Math.min(10000, Math.floor(Number(data && data.maxUses) || 0)));
+    const invite = {
+      code: crypto.randomBytes(8).toString('hex'),
+      channelId: channelId || null,
+      createdBy: socket.usernameKey,
+      createdAt: Date.now(),
+      expiresAt: durationMinutes ? Date.now() + durationMinutes * 60000 : 0,
+      maxUses, uses: 0, revoked: false
+    };
+    srv.invites = Array.isArray(srv.invites) ? srv.invites : [];
+    srv.invites.push(invite);
+    saveServers();
+    done({ ok: true, invite: publicInvite(invite) });
+  });
+
+  socket.on('list-server-invites', (serverId, cb) => {
+    const done = typeof cb === 'function' ? cb : () => {};
+    const srv = dspeakServers.find(s => s.id === serverId);
+    if (!srv || (!isOwnerOfServer(socket, srv) && !hasServerPermission(socket, srv, 'manageInvites'))) {
+      return done({ ok: false, error: 'Você não pode ver os convites.' });
+    }
+    done({ ok: true, invites: (srv.invites || []).map(publicInvite) });
+  });
+
+  socket.on('revoke-server-invite', (data, cb) => {
+    const done = typeof cb === 'function' ? cb : () => {};
+    const srv = dspeakServers.find(s => s.id === (data && data.serverId));
+    if (!srv || (!isOwnerOfServer(socket, srv) && !hasServerPermission(socket, srv, 'manageInvites'))) {
+      return done({ ok: false, error: 'Você não pode revogar convites.' });
+    }
+    const invite = (srv.invites || []).find(i => i.code === data.code);
+    if (!invite) return done({ ok: false, error: 'Convite não encontrado.' });
+    invite.revoked = true;
+    saveServers();
+    done({ ok: true });
+  });
+
   // ---------- Entrar num servidor existente via link/código de convite ----------
   socket.on('join-server-by-invite', (data) => {
     if (!socket.username || socket.isGuest) return;
     const inviteCode = String(data && data.inviteCode || '').trim();
     const password = data && data.password ? String(data.password) : '';
-    const srv = dspeakServers.find(s => s.inviteCode === inviteCode);
-    if (!srv) { socket.emit('server-join-failed', { message: 'Link de convite inválido ou expirado.' }); return; }
+    const found = activeInviteByCode(inviteCode);
+    const srv = found && found.srv;
+    const invite = found && found.invite;
+    if (!srv) { socket.emit('server-join-failed', { message: 'Link de convite inválido, expirado ou sem usos disponíveis.' }); return; }
 
     // Banido não volta nem com convite — só se a staff desbanir.
     if ((srv.banned || []).includes(socket.usernameKey)) {
@@ -2112,7 +2419,7 @@ io.on('connection', (socket) => {
       // Já é membro — só reenvia a lista e manda pra lá mesmo assim (cobre o caso de
       // clicar num link de convite de um servidor que a pessoa já está).
       sendMyServers(socket);
-      socket.emit('server-joined', { serverId: srv.id });
+      socket.emit('server-joined', { serverId: srv.id, channelId: invite && invite.channelId });
       return;
     }
 
@@ -2123,6 +2430,7 @@ io.on('connection', (socket) => {
 
     srv.members = srv.members || [];
     if (!srv.members.includes(socket.usernameKey)) srv.members.push(socket.usernameKey);
+    if (invite) invite.uses = Number(invite.uses || 0) + 1;
     saveServers();
 
     sendMyServers(socket);
@@ -2130,7 +2438,7 @@ io.on('connection', (socket) => {
     // continuava vendo o servidor em que já estava (ex: o padrão), mesmo já sendo
     // membro do novo, porque 'my-servers' sozinho só atualiza a LISTA, não diz pra
     // navegar pra lugar nenhum.
-    socket.emit('server-joined', { serverId: srv.id });
+    socket.emit('server-joined', { serverId: srv.id, channelId: invite && invite.channelId });
   });
 
   // ---------- Moderador POR SERVIDOR ----------
@@ -2148,9 +2456,17 @@ io.on('connection', (socket) => {
     if (srv.ownerUsername === targetKey) return;   // dono não vira mod de si mesmo
 
     srv.moderators = srv.moderators || [];
+    ensureServerRoleModel(srv);
     const already = srv.moderators.includes(targetKey);
-    if (data.makeModerator && !already) srv.moderators.push(targetKey);
-    else if (!data.makeModerator && already) srv.moderators = srv.moderators.filter(k => k !== targetKey);
+    if (data.makeModerator && !already) {
+      srv.moderators.push(targetKey);
+      const ids = Array.isArray(srv.memberRoleIds[targetKey]) ? srv.memberRoleIds[targetKey] : [];
+      if (!ids.includes('legacy-moderator')) srv.memberRoleIds[targetKey] = [...ids, 'legacy-moderator'];
+    }
+    else if (!data.makeModerator && already) {
+      srv.moderators = srv.moderators.filter(k => k !== targetKey);
+      srv.memberRoleIds[targetKey] = (srv.memberRoleIds[targetKey] || []).filter(id => id !== 'legacy-moderator');
+    }
     else return; // nada mudou
 
     saveServers();
@@ -2161,12 +2477,93 @@ io.on('connection', (socket) => {
     }
   });
 
+  // ---------- Cargos personalizados por servidor ----------
+  socket.on('create-server-role', (data, cb) => {
+    const done = typeof cb === 'function' ? cb : () => {};
+    const srv = dspeakServers.find(s => s.id === (data && data.serverId));
+    if (!srv || !isOwnerOfServer(socket, srv)) return done({ ok: false, error: 'Só o dono cria cargos.' });
+    ensureServerRoleModel(srv);
+    const name = String(data && data.name || '').trim().slice(0, 32);
+    if (!name) return done({ ok: false, error: 'Informe o nome do cargo.' });
+    if (srv.roleDefinitions.filter(r => !r.managed).length >= 30) {
+      return done({ ok: false, error: 'Limite de 30 cargos personalizados.' });
+    }
+    const color = /^#[0-9a-f]{6}$/i.test(String(data.color || '')) ? String(data.color) : '#8fd3ff';
+    const requested = data && data.permissions && typeof data.permissions === 'object' ? data.permissions : {};
+    const permissions = Object.fromEntries(SERVER_PERMISSION_KEYS.map(k => [k, !!requested[k]]));
+    const role = {
+      id: `role-${crypto.randomBytes(6).toString('hex')}`,
+      name, color, position: Number.isFinite(Number(data.position)) ? Number(data.position) : 10,
+      permissions
+    };
+    srv.roleDefinitions.push(role);
+    saveServers();
+    for (const [, s] of io.sockets.sockets) if (s.username && isMemberOfServer(srv, s.username)) sendMyServers(s);
+    done({ ok: true, role });
+  });
+
+  socket.on('delete-server-role', (data, cb) => {
+    const done = typeof cb === 'function' ? cb : () => {};
+    const srv = dspeakServers.find(s => s.id === (data && data.serverId));
+    if (!srv || !isOwnerOfServer(socket, srv)) return done({ ok: false, error: 'Só o dono apaga cargos.' });
+    ensureServerRoleModel(srv);
+    const role = srv.roleDefinitions.find(r => r.id === data.roleId);
+    if (!role || role.managed) return done({ ok: false, error: 'Esse cargo não pode ser apagado.' });
+    srv.roleDefinitions = srv.roleDefinitions.filter(r => r.id !== role.id);
+    for (const key of Object.keys(srv.memberRoleIds)) {
+      srv.memberRoleIds[key] = (srv.memberRoleIds[key] || []).filter(id => id !== role.id);
+    }
+    saveServers();
+    for (const [, s] of io.sockets.sockets) if (s.username && isMemberOfServer(srv, s.username)) sendMyServers(s);
+    done({ ok: true });
+  });
+
+  socket.on('update-server-role', (data, cb) => {
+    const done = typeof cb === 'function' ? cb : () => {};
+    const srv = dspeakServers.find(s => s.id === (data && data.serverId));
+    if (!srv || !isOwnerOfServer(socket, srv)) return done({ ok: false, error: 'Só o dono edita cargos.' });
+    ensureServerRoleModel(srv);
+    const role = srv.roleDefinitions.find(r => r.id === data.roleId);
+    if (!role || role.managed) return done({ ok: false, error: 'Esse cargo não pode ser editado.' });
+    const name = String(data.name || '').trim().slice(0, 32);
+    if (!name) return done({ ok: false, error: 'Nome inválido.' });
+    role.name = name;
+    if (/^#[0-9a-f]{6}$/i.test(String(data.color || ''))) role.color = String(data.color);
+    role.position = Number.isFinite(Number(data.position)) ? Number(data.position) : role.position;
+    const requested = data.permissions && typeof data.permissions === 'object' ? data.permissions : {};
+    role.permissions = Object.fromEntries(SERVER_PERMISSION_KEYS.map(k => [k, !!requested[k]]));
+    saveServers();
+    for (const [, s] of io.sockets.sockets) if (s.username && isMemberOfServer(srv, s.username)) sendMyServers(s);
+    done({ ok: true, role });
+  });
+
+  socket.on('set-member-server-roles', (data, cb) => {
+    const done = typeof cb === 'function' ? cb : () => {};
+    const srv = dspeakServers.find(s => s.id === (data && data.serverId));
+    if (!srv || !hasServerPermission(socket, srv, 'manageRoles')) {
+      return done({ ok: false, error: 'Você não pode gerenciar cargos.' });
+    }
+    ensureServerRoleModel(srv);
+    const targetKey = keyOf(data && data.targetUsername);
+    if (!targetKey || !isMemberOfServer(srv, targetKey) || srv.ownerUsername === targetKey) {
+      return done({ ok: false, error: 'Membro inválido.' });
+    }
+    const allowed = new Set(srv.roleDefinitions.filter(r => !r.managed).map(r => r.id));
+    srv.memberRoleIds[targetKey] = [...new Set(Array.isArray(data.roleIds) ? data.roleIds : [])]
+      .filter(id => allowed.has(id));
+    // Preserva o cargo de moderador legado enquanto a lista antiga disser que é mod.
+    if ((srv.moderators || []).includes(targetKey)) srv.memberRoleIds[targetKey].push('legacy-moderator');
+    saveServers();
+    for (const [, s] of io.sockets.sockets) if (s.username && isMemberOfServer(srv, s.username)) sendMyServers(s);
+    done({ ok: true });
+  });
+
   // ---------- Expulsar / banir alguém DO SERVIDOR (não só da sala de voz) ----------
   // Dono e Moderadores do servidor podem expulsar/banir membros; Moderador não
   // mexe em outro Moderador nem no dono — isso é papel do dono. Banido entra numa
   // lista persistida e não consegue voltar nem pelo link de convite.
   function canModerateTarget(socket, srv, targetKey) {
-    if (!canManageServer(socket, srv)) return false;
+    if (!isOwnerOfServer(socket, srv) && !hasServerPermission(socket, srv, 'moderateMembers')) return false;
     if (targetKey === socket.usernameKey) return false;           // ninguém se expulsa
     if (srv.ownerUsername === targetKey) return false;            // dono é intocável
     const targetIsMod = (srv.moderators || []).includes(targetKey);
@@ -2224,14 +2621,14 @@ io.on('connection', (socket) => {
   // Lista de banidos (só quem gerencia o servidor vê) + desbanir.
   socket.on('get-server-bans', (serverId) => {
     const srv = dspeakServers.find(s => s.id === serverId);
-    if (!srv || !canManageServer(socket, srv)) return;
+    if (!srv || (!isOwnerOfServer(socket, srv) && !hasServerPermission(socket, srv, 'moderateMembers'))) return;
     socket.emit('server-bans', { serverId, banned: srv.banned || [] });
   });
 
   socket.on('unban-from-server', (data) => {
     if (!data) return;
     const srv = dspeakServers.find(s => s.id === data.serverId);
-    if (!srv || !canManageServer(socket, srv)) return;
+    if (!srv || (!isOwnerOfServer(socket, srv) && !hasServerPermission(socket, srv, 'moderateMembers'))) return;
     const targetKey = keyOf(String(data.targetUsername || ''));
     if (!targetKey) return;
     srv.banned = (srv.banned || []).filter(k => k !== targetKey);
@@ -2274,7 +2671,8 @@ io.on('connection', (socket) => {
     const channelId = data && data.channelId;
     const isGlobalMod = socket.role === 'owner' || socket.role === 'moderator';
     const srvOfRoom = serverOfChannel(channelId);
-    if (!isGlobalMod && !canManageServer(socket, srvOfRoom)) return;
+    if (!isGlobalMod && !isOwnerOfServer(socket, srvOfRoom) &&
+        !hasServerPermission(socket, srvOfRoom, 'moderateMembers')) return;
     const targetSocket = io.sockets.sockets.get(targetSocketId);
     if (!targetSocket) return;
     // Ninguém abaixo do Owner global mexe num Owner global.
@@ -2294,7 +2692,9 @@ io.on('connection', (socket) => {
     if (!isGlobalMod) {
       const targetChannelId = Object.keys(voiceUsers).find(chId =>
         voiceUsers[chId].some(u => u.socketId === targetSocketId));
-      if (!canManageServer(socket, serverOfChannel(targetChannelId))) return;
+      const targetSrv = serverOfChannel(targetChannelId);
+      if (!isOwnerOfServer(socket, targetSrv) &&
+          !hasServerPermission(socket, targetSrv, 'moderateMembers')) return;
     }
     // Ninguém abaixo do Owner global mexe num Owner global.
     if (targetSocket.role === 'owner' && socket.role !== 'owner') return;
@@ -2404,8 +2804,10 @@ io.on('connection', (socket) => {
       socketId: socket.id,
       name: username,
       avatarUrl,
-      muted: !!socket.currentMuted,
+      muted: !!socket.currentMuted || !!socket.currentServerMuted,
       deafened: !!socket.currentDeafened,
+      serverMuted: !!socket.currentServerMuted,
+      raisedHand: !!socket.currentRaisedHand,
       role: socket.role
     });
 
@@ -2761,7 +3163,8 @@ io.on('connection', (socket) => {
     const srv = serverOfChannel(channelId);
     const isMine = !!(item && item.addedBy && socket.username &&
       String(item.addedBy).toLowerCase() === String(socket.username).toLowerCase());
-    if (!isMine && !(srv && canManageServer(socket, srv))) return denyMusicControl(socket);
+    if (!isMine && !(srv && (isOwnerOfServer(socket, srv) ||
+        hasServerPermission(socket, srv, 'manageMessages')))) return denyMusicControl(socket);
     const wasCurrent = session.currentId === itemId;
     session.queue = session.queue.filter(i => i.id !== itemId);
     if (wasCurrent) {
@@ -2824,6 +3227,8 @@ async function boot() {
       if (snap.roles) roles = snap.roles;
       if (snap.messages) messages = snap.messages;
       if (snap.dms) directMessages = snap.dms;
+      const savedPush = await db.getKv('push');
+      if (savedPush && typeof savedPush === 'object') pushState = savedPush;
       accounts = {};
       (snap.users || []).forEach((row) => {
         accounts[row.username_key] = {
@@ -2854,6 +3259,7 @@ async function boot() {
       if (!channels.some(c => c.id === defCh.id)) channels.push({ ...defCh });
     });
     if (!dspeakServers.some(s => s.id === 'dspeak')) dspeakServers.unshift(DEFAULT_SERVER);
+    dspeakServers.forEach(ensureServerRoleModel);
 
     pruneAllMessages();
     pruneAllDms();
@@ -2891,6 +3297,7 @@ async function boot() {
     saveRoles();
     saveMessages();
     saveDirectMessages();
+    savePushState();
     saveAccounts();
   } catch (e) {
     console.error('[DSpeak] Falha ao ligar o banco. O servidor sobe mesmo assim, mas os dados podem não persistir:', e);
