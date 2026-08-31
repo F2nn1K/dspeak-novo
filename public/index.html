@@ -769,6 +769,9 @@
 
       /* Nenhum modal pode ficar mais largo que a tela do celular. */
       .modal { max-width: calc(100vw - 20px); box-sizing: border-box; }
+      /* E modal fica por cima de TUDO no celular (o chat da sala de voz usa
+         z-index 2000 e a gaveta lateral 3000 — sem isso, eles cobriam o modal). */
+      .modal-overlay { z-index: 4000; }
 
       /* Configurações: vira tela cheia, com as abas numa faixa em cima
          (em vez da coluna lateral, que espremia todo o conteúdo). */
