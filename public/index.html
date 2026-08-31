@@ -347,7 +347,9 @@
     .user-name { font-size: 14px; font-weight: bold; color: #f2f3f5; display: flex; align-items: center; gap: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .user-handle { font-size: 11px; color: #8a8f9d; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
 
-    .status-selector-popover { display: none; position: absolute; bottom: 65px; left: 12px; background: #13151b; border: 1px solid rgba(255,85,0,0.3); border-radius: 8px; padding: 6px; z-index: 1000; box-shadow: 0 10px 25px rgba(0,0,0,0.8); width: 180px; }
+    /* Fixo na tela (não dentro do deck, que tem overflow:hidden e cortava o
+       balão) — a posição é calculada na hora de abrir, ancorada no perfil. */
+    .status-selector-popover { display: none; position: fixed; background: #13151b; border: 1px solid rgba(255,85,0,0.3); border-radius: 10px; padding: 6px; z-index: 6000; box-shadow: 0 10px 25px rgba(0,0,0,0.8); width: 200px; }
 
     .user-volume-btn { background: transparent; border: 1px solid rgba(255,255,255,0.15); color: #b5bac1; width: 20px; height: 20px; border-radius: 5px; cursor: pointer; font-size: 11px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
     .user-volume-btn:hover { background: rgba(255, 85, 0, 0.25); color: #fff; }
@@ -3573,7 +3575,14 @@
     function toggleStatusSelector(e) {
       e.stopPropagation();
       const pop = document.getElementById('status-selector-popover');
-      pop.style.display = pop.style.display === 'block' ? 'none' : 'block';
+      if (pop.style.display === 'block') { pop.style.display = 'none'; return; }
+      // Abre logo ACIMA da barra de perfil, sem sair da tela.
+      const bar = document.getElementById('user-profile-bar');
+      const r = bar.getBoundingClientRect();
+      pop.style.display = 'block';
+      const popH = pop.offsetHeight || 150;
+      pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 208)) + 'px';
+      pop.style.top = Math.max(8, r.top - popH - 8) + 'px';
     }
 
     function setUserStatus(statusKey, colorHex) {
