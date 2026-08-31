@@ -306,7 +306,12 @@
     .voice-user-item:hover { background: rgba(255, 85, 0, 0.08); }
     .voice-user-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
     .voice-user-avatar { width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: bold; color: #fff; flex-shrink: 0; border: 1px solid rgba(255,255,255,0.1); background-size: cover; background-position: center; }
-    .voice-user-name { font-size: 13px; color: #b5bac1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .voice-user-name { font-size: 13px; color: #b5bac1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
+    /* Status personalizado ao lado do nome na lista de participantes. */
+    .voice-user-status {
+      font-size: 11px; color: #7d828f; white-space: nowrap; overflow: hidden;
+      text-overflow: ellipsis; min-width: 0; flex-shrink: 1; font-style: italic;
+    }
 
     .discord-deck {
       margin: 10px; flex-shrink: 0; background: #181b24; border-radius: 14px; display: flex; flex-direction: column; overflow: hidden;
@@ -4047,11 +4052,14 @@
               const dmSafeName = String(u.name).replace(/'/g, "\\'");
               const hasUnreadDm = !isSelf && !!unreadDms[u.name.toLowerCase()];
 
+              // Status personalizado da pessoa aparece do lado do nome na lista.
+              const listCustomSt = userCustomStatusesMap[String(u.name || '').toLowerCase()];
               sub.innerHTML = `
                 <div class="voice-user-left">
                   <div class="voice-user-avatar" style="${avatarStyle}">${initialText}</div>
                   ${presenceDotHtml(u.name)}
                   <span class="voice-user-name">${u.name}</span>
+                  ${listCustomSt ? `<span class="voice-user-status" title="${escapeHtml(listCustomSt)}">${escapeHtml(listCustomSt)}</span>` : ''}
                   ${roleBadgeHtml(u.role)}
                   ${hasUnreadDm ? `<button class="dm-unread-badge" title="Mensagem privada não lida — clica pra abrir" onclick="event.stopPropagation(); openDmWith('${dmSafeName}', ${u.avatarUrl ? `'${u.avatarUrl}'` : 'null'})">💬</button>` : ''}
                 </div>
