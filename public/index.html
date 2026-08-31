@@ -5900,7 +5900,22 @@
       }
     }, 500);
 
+    // Celular (WebView Android/iOS): o sistema não expõe captura de tela pro
+    // navegador embutido — sem getDisplayMedia não tem como transmitir a tela.
+    // Esconde os botões pra não parecer que está quebrado; câmera continua.
+    const SCREEN_SHARE_SUPPORTED = !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
+    if (!SCREEN_SHARE_SUPPORTED) {
+      ['share-btn', 'stage-share-btn'].forEach(id => {
+        const b = document.getElementById(id);
+        if (b) b.style.display = 'none';
+      });
+    }
+
     function toggleScreenShare() {
+      if (!SCREEN_SHARE_SUPPORTED) {
+        showToast('Esse aparelho não permite transmitir a tela pelo app — mas dá pra ligar a câmera. 📷');
+        return;
+      }
       if (!localStream) {
         if (connectedVoiceChannel === WAITING_VOICE_ROOM) {
           showToast('Não dá pra transmitir tela na Sala de Espera.');
