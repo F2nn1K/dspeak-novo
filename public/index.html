@@ -27,7 +27,6 @@
     */
     body.has-custom-titlebar .modal-overlay,
     body.has-custom-titlebar #welcome-intro-overlay,
-    body.has-custom-titlebar #no-servers-overlay,
     body.has-custom-titlebar #session-replaced-overlay,
     body.has-custom-titlebar #reconnect-overlay,
     body.has-custom-titlebar #auth-overlay {
@@ -130,28 +129,6 @@
     @keyframes reconnectSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
     #reconnect-text { margin-top: 18px; font-size: 14px; font-weight: 700; color: #f2f3f5; }
     #reconnect-sub { margin-top: 4px; font-size: 12px; color: #8a8f9d; }
-
-    /* ---- Tela de "você não está em nenhum servidor" (contas novas) ---- */
-    #no-servers-overlay {
-      position: fixed; inset: 0; z-index: 1200; display: none; align-items: center; justify-content: center;
-      flex-direction: column; gap: 14px; text-align: center; padding: 20px;
-      background: radial-gradient(ellipse at center, rgba(20,14,10,0.98) 0%, rgba(8,6,5,0.99) 100%);
-    }
-    #no-servers-overlay.visible { display: flex; animation: welcomeFadeIn 0.25s ease-out; }
-    #no-servers-mascot {
-      width: 110px; height: 110px; border-radius: 24px; background-size: cover; background-position: center;
-      box-shadow: 0 0 34px rgba(255,85,0,0.5), 0 14px 36px rgba(0,0,0,0.5); margin-bottom: 6px;
-    }
-    .ns-title { font-size: 22px; font-weight: 800; color: #fff; }
-    .ns-sub { font-size: 14px; color: #b5bac1; max-width: 420px; line-height: 1.5; }
-    .ns-buttons { display: flex; gap: 12px; margin-top: 10px; flex-wrap: wrap; justify-content: center; }
-    .ns-btn {
-      background: transparent; border: 1px solid rgba(255,85,0,0.45); color: #ff8844;
-      padding: 12px 22px; border-radius: 10px; font-size: 14px; font-weight: 700; cursor: pointer; transition: all 0.15s;
-    }
-    .ns-btn:hover { background: rgba(255,85,0,0.12); }
-    .ns-btn.primary { background: #ff5500; border-color: #ff5500; color: #fff; box-shadow: 0 8px 24px rgba(255,85,0,0.4); }
-    .ns-btn.primary:hover { background: #ff6a1f; }
 
     /* ---- Cartão de informações ao passar o mouse num usuário ---- */
     #user-hover-tooltip {
@@ -938,18 +915,6 @@
     <div id="reconnect-mascot"></div>
     <div id="reconnect-text">Conexão caiu</div>
     <div id="reconnect-sub">Tentando reconectar...</div>
-  </div>
-
-  <!-- Aparece pra quem ainda não está em NENHUM servidor (contas novas):
-       igual ao Discord, a pessoa cria o próprio servidor ou entra com convite. -->
-  <div id="no-servers-overlay">
-    <div id="no-servers-mascot"></div>
-    <div class="ns-title">Você ainda não está em nenhum servidor</div>
-    <div class="ns-sub">Crie o seu próprio servidor pra chamar a galera, ou cole o link de convite que te mandaram pra entrar num servidor que já existe.</div>
-    <div class="ns-buttons">
-      <button class="ns-btn primary" onclick="openServerModalFromWelcome('create')">Criar meu servidor</button>
-      <button class="ns-btn" onclick="openServerModalFromWelcome('join')">Entrar com convite</button>
-    </div>
   </div>
 
   <div id="session-replaced-overlay">
@@ -2109,29 +2074,14 @@
     // aberto pra sempre.
     window.addEventListener('blur', () => { pttKeyHeld = false; });
 
-    // ---------- Item 3: desconexão automática por ausência (AFK) ----------
-    // Só vale enquanto conectado numa sala de voz — depois de um tempo sem
-    // NENHUMA atividade (mouse, teclado, clique, ou falar de verdade no
-    // microfone), desconecta da sala sozinho, com um aviso explicando o motivo.
-    // Não desconecta do app/servidor inteiro — só sai da sala de voz, como pedido.
-    const AFK_TIMEOUT_MS = 20 * 60 * 1000; // 20 minutos sem atividade
-    let lastActivityTime = Date.now();
-    function markActivity() { lastActivityTime = Date.now(); }
-    ['mousemove', 'mousedown', 'keydown', 'click', 'wheel', 'touchstart'].forEach(evt => {
-      window.addEventListener(evt, markActivity, { passive: true });
-    });
-    setInterval(() => {
-      if (!connectedVoiceChannel) return;
-      if (Date.now() - lastActivityTime >= AFK_TIMEOUT_MS) {
-        const channelName = (() => {
-          const srv = servers.find(s => s.id === activeServerId);
-          const ch = srv && srv.channels.find(c => c.id === connectedVoiceChannel);
-          return ch ? ch.name : 'sala de voz';
-        })();
-        disconnectVoice();
-        showToast(`Você foi desconectado de "${channelName}" por ficar ausente.`);
-      }
-    }, 30 * 1000); // confere a cada 30s — não precisa ser mais frequente que isso
+    // ---------- Desconexão automática por ausência (AFK): REMOVIDA ----------
+    // A checagem antiga derrubava a pessoa da sala após 20 min sem mouse/teclado
+    // NA JANELA DO APP — mas quem transmite tela (jogando/assistindo em outra
+    // janela, app minimizado) não gera esses eventos e caía injustamente.
+    // Agora ninguém é desconectado por inatividade; a pessoa só sai da sala
+    // quando quiser (ou se a conexão cair de verdade).
+    // markActivity continua existindo porque o noise gate a chama ao detectar fala.
+    function markActivity() {}
 
     let audioContext = null;
     let micAnalyser = null;
@@ -3666,9 +3616,8 @@
       // canais).
       servers = list;
 
-      // Conta nova (ou saiu de tudo): sem servidor nenhum, mostra a tela de
-      // "crie um servidor ou entre com convite" no lugar do app vazio.
-      updateNoServersState();
+      // Conta nova (ou saiu de tudo): sem servidor nenhum, o app fica vazio —
+      // a pessoa cria ou entra num servidor pelo botão "+" da barra lateral.
       if (servers.length === 0) { renderServers(); applyRolePermissionsToUI(); return; }
 
       // Tinha um pedido de troca de servidor (criar/entrar) esperando a lista chegar?
@@ -3753,24 +3702,6 @@
         pendingServerSwitchId = serverId;
       }
     });
-
-    // ---------- Tela de "nenhum servidor" (contas novas) ----------
-    function updateNoServersState() {
-      const ov = document.getElementById('no-servers-overlay');
-      if (!ov) return;
-      const show = servers.length === 0;
-      ov.classList.toggle('visible', show);
-      if (show) {
-        const m = document.getElementById('no-servers-mascot');
-        if (m) m.style.backgroundImage = `url(${MASCOT_ICON_URL})`;
-      }
-    }
-
-    // Os botões da tela de boas-vindas abrem o mesmo modal de sempre, já na aba certa.
-    function openServerModalFromWelcome(tab) {
-      openServerJoinCreateModal();
-      switchServerModalTab(tab);
-    }
 
     // ---------- Criar / entrar em servidor ----------
     function openServerJoinCreateModal() {
