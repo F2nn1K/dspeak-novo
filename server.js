@@ -67,6 +67,20 @@ app.get('/download/windows', (req, res) => {
   }
 });
 
+// Mesmo esquema pro Android: entrega o .apk mais recente da pasta downloads/.
+app.get('/download/android', (req, res) => {
+  try {
+    const newest = fs.readdirSync(DOWNLOADS_DIR)
+      .filter(f => f.toLowerCase().endsWith('.apk'))
+      .map(f => ({ f, m: fs.statSync(path.join(DOWNLOADS_DIR, f)).mtimeMs }))
+      .sort((a, b) => b.m - a.m)[0];
+    if (!newest) throw new Error('sem apk');
+    res.download(path.join(DOWNLOADS_DIR, newest.f), 'DSpeak.apk');
+  } catch (e) {
+    res.status(404).send('App Android ainda não disponível — tenta de novo daqui a pouco.');
+  }
+});
+
 // ---------- Credenciais do servidor TURN (proxy) ----------
 // Trocamos do metered.ca pra Cloudflare Realtime — 1000 GB (1TB) grátis por mês, MUITO
 // mais generoso que os 500MB do metered.ca (que já estourou uma vez). A chave de
