@@ -766,6 +766,25 @@
       .content-workspace:not(.text-mode) #right-chat-sidebar {
         position: absolute; inset: 0; width: 100%; z-index: 2000; border-left: none;
       }
+
+      /* Nenhum modal pode ficar mais largo que a tela do celular. */
+      .modal { max-width: calc(100vw - 20px); box-sizing: border-box; }
+
+      /* Configurações: vira tela cheia, com as abas numa faixa em cima
+         (em vez da coluna lateral, que espremia todo o conteúdo). */
+      .settings-modal {
+        flex-direction: column; width: 100%; max-width: 100%;
+        height: 100%; max-height: 100%; border-radius: 0;
+      }
+      body.has-custom-titlebar .settings-modal { max-height: 100%; }
+      .settings-sidebar-nav {
+        width: 100%; box-sizing: border-box; flex-direction: row; align-items: center;
+        gap: 6px; padding: 12px 52px 12px 12px; overflow-x: auto;
+        border-right: none; border-bottom: 1px solid rgba(255, 85, 0, 0.15);
+      }
+      .settings-nav-title { display: none; }
+      .settings-nav-item { white-space: nowrap; flex-shrink: 0; }
+      .settings-content-area { padding: 16px; }
     }
     
     .chat-date-separator { display: flex; align-items: center; justify-content: center; margin: 16px 0 8px 0; position: relative; }
