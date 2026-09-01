@@ -476,6 +476,21 @@ function broadcastCustomStatuses() {
 const PUSH_ENABLED = process.env.FIREBASE_PUSH_ENABLED === '1';
 const PUSH_FILE = path.join(DATA_DIR, 'push.json');
 let pushState = { devices: {}, preferences: {} };
+let firebaseMessaging = null;
+if (PUSH_ENABLED) {
+  try {
+    const firebaseAdmin = require('firebase-admin');
+    if (!firebaseAdmin.apps.length) {
+      firebaseAdmin.initializeApp({
+        credential: firebaseAdmin.credential.applicationDefault()
+      });
+    }
+    firebaseMessaging = firebaseAdmin.messaging();
+    console.log('[DSpeak] Firebase Cloud Messaging ativo.');
+  } catch (e) {
+    console.error('[DSpeak] Firebase Push não iniciou:', e.message);
+  }
+}
 try {
   if (fs.existsSync(PUSH_FILE)) pushState = JSON.parse(fs.readFileSync(PUSH_FILE, 'utf8'));
 } catch (e) {
@@ -487,6 +502,40 @@ function savePushState() {
   else saveJsonDebounced(PUSH_FILE, () => pushState);
 }
 registerFlushable(PUSH_FILE, () => pushState);
+
+async function sendPushToUser(username, preference, title, body, data = {}) {
+  if (!firebaseMessaging) return;
+  const usernameKey = keyOf(username);
+  const preferences = pushState.preferences[usernameKey] || {};
+  if (preferences[preference] === false) return;
+  const devices = Array.isArray(pushState.devices[usernameKey])
+    ? pushState.devices[usernameKey] : [];
+  const tokens = [...new Set(devices.map(d => d && d.token).filter(Boolean))].slice(0, 500);
+  if (!tokens.length) return;
+  try {
+    const response = await firebaseMessaging.sendEachForMulticast({
+      tokens,
+      notification: { title: String(title).slice(0, 120), body: String(body).slice(0, 500) },
+      data: Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)])),
+      android: {
+        priority: 'high',
+        notification: { channelId: 'dspeak_messages', sound: 'default' }
+      }
+    });
+    const invalid = new Set();
+    response.responses.forEach((item, index) => {
+      const code = item.error && item.error.code;
+      if (code === 'messaging/registration-token-not-registered' ||
+          code === 'messaging/invalid-registration-token') invalid.add(tokens[index]);
+    });
+    if (invalid.size) {
+      pushState.devices[usernameKey] = devices.filter(d => !invalid.has(d.token));
+      savePushState();
+    }
+  } catch (e) {
+    console.error(`[DSpeak] Falha ao enviar push para ${usernameKey}:`, e.message);
+  }
+}
 
 // ---------- Ouvir junto (YouTube / Spotify oficiais) ----------
 // Estado por sala de voz. O áudio NÃO é baixado nem retransmitido pelo servidor —
@@ -1572,6 +1621,11 @@ io.on('connection', (socket) => {
       s.emit('friend-request-received', { from: socket.username });
       s.emit('friends-data', friendsPayloadFor(targetKey));
     });
+    sendPushToUser(
+      targetKey, 'friendship', 'Pedido de amizade',
+      `${socket.username} quer ser seu amigo no DSpeak`,
+      { url: 'https://dspeak.com.br/app', type: 'friendship' }
+    );
   });
 
   socket.on('friend-respond', (data) => {
@@ -1831,6 +1885,7 @@ io.on('connection', (socket) => {
 
   socket.on('raise-hand', (data) => {
     const raisedHand = !!(data && data.raised);
+    const wasRaised = !!socket.currentRaisedHand;
     socket.currentRaisedHand = raisedHand;
     Object.keys(voiceUsers).forEach(channelId => {
       voiceUsers[channelId] = voiceUsers[channelId].map(u =>
@@ -1838,6 +1893,31 @@ io.on('connection', (socket) => {
       );
     });
     io.emit('update-voice-users', voiceUsers);
+    if (raisedHand && !wasRaised) {
+      const channelId = Object.keys(voiceUsers).find(id =>
+        (voiceUsers[id] || []).some(u => u.socketId === socket.id));
+      const srv = channelId && serverOfChannel(channelId);
+      if (srv) {
+        const staffKeys = new Set(srv.moderators || []);
+        if (srv.ownerUsername) staffKeys.add(srv.ownerUsername);
+        Object.keys(srv.memberRoleIds || {}).forEach(usernameKey => {
+          if (permissionsForMember(srv, usernameKey).moderateMembers) staffKeys.add(usernameKey);
+        });
+        if (srv.id === 'dspeak') {
+          Object.entries(roles).forEach(([usernameKey, role]) => {
+            if (role === 'owner') staffKeys.add(usernameKey);
+          });
+        }
+        staffKeys.delete(socket.usernameKey);
+        staffKeys.forEach(targetKey => {
+          sendPushToUser(
+            targetKey, 'raisedHand', 'Mão levantada',
+            `${socket.username} quer falar`,
+            { url: 'https://dspeak.com.br/app', type: 'raised-hand', channelId }
+          );
+        });
+      }
+    }
   });
 
   socket.on('server-mute-user', (data) => {
@@ -1967,6 +2047,20 @@ io.on('connection', (socket) => {
     pruneChannelMessages(data.room);
     saveMessages();
     io.to(data.room).emit('chat-message', entry);
+    const mentionKeys = new Set();
+    for (const match of messageText.matchAll(/@([\p{L}\p{N}_.-]{1,40})/gu)) {
+      const mentionedKey = keyOf(match[1]);
+      if (mentionedKey && mentionedKey !== socket.usernameKey && accounts[mentionedKey]) {
+        mentionKeys.add(mentionedKey);
+      }
+    }
+    mentionKeys.forEach(targetKey => {
+      sendPushToUser(
+        targetKey, 'mention', `${socket.username} mencionou você`,
+        messageText.trim().slice(0, 180),
+        { url: `https://dspeak.com.br/app?channel=${encodeURIComponent(data.room)}`, type: 'mention' }
+      );
+    });
   });
 
   socket.on('vote-poll', (data) => {
@@ -2154,6 +2248,18 @@ io.on('connection', (socket) => {
     findSocketsByUsername(toUsername).forEach(s => {
       s.emit('dm-message', { withUsername: socket.username, ...entry });
     });
+    const isCallInvite = !!entry.callInvite;
+    sendPushToUser(
+      toUsername,
+      isCallInvite ? 'invite' : 'dm',
+      isCallInvite ? `${socket.username} convidou você para uma chamada` : `Mensagem de ${socket.username}`,
+      isCallInvite ? `Entrar em ${entry.callInvite.channelName}` : (message || 'Enviou um anexo'),
+      {
+        url: 'https://dspeak.com.br/app',
+        type: isCallInvite ? 'call-invite' : 'dm',
+        from: socket.username
+      }
+    );
   });
 
   socket.on('get-dm-history', (withUsername) => {

@@ -13,12 +13,11 @@
   "type": "commonjs",
   "dependencies": {
     "express": "^5.2.1",
+    "firebase-admin": "^13.10.0",
+    "mediasoup": "3.19.0",
     "multer": "^2.0.2",
     "nodemailer": "^7.0.13",
     "pg": "^8.23.0",
     "socket.io": "^4.8.3"
-  },
-  "optionalDependencies": {
-    "mediasoup": "^3.16.0"
   }
 }
