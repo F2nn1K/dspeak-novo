@@ -506,8 +506,10 @@
     .opt-card.selected .opt-radio-dot { border-color: #ff5500; background: #ff5500; }
 
     .mic-test-container { background: #0c0d10; padding: 10px 12px; border-radius: 8px; border: 1px solid rgba(255, 85, 0, 0.2); display: flex; flex-direction: column; gap: 6px; }
-    .mic-test-bar-wrapper { width: 100%; height: 8px; background: #181b24; border-radius: 4px; overflow: hidden; border: 1px solid rgba(255,85,0,0.15); }
+    .mic-test-bar-wrapper { width: 100%; height: 8px; background: #181b24; border-radius: 4px; overflow: hidden; border: 1px solid rgba(255,85,0,0.15); position: relative; }
     .mic-test-bar-fill { width: 0%; height: 100%; background: linear-gradient(90deg, #00ffcc 0%, #ffaa00 70%, #ff3333 100%); border-radius: 4px; transition: width 0.05s ease-out; }
+    /* Linha branca no medidor: o limiar da detecção de voz — sinal acima dela abre o microfone. */
+    .mic-test-threshold { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff; border-radius: 1px; box-shadow: 0 0 5px rgba(255,255,255,0.9); pointer-events: none; }
     .sensitivity-slider { width: 100%; accent-color: #ff5500; cursor: pointer; }
 
     .shortcut-key-badge { background: #181b24; border: 1px solid #ff5500; color: #ff5500; padding: 4px 10px; border-radius: 6px; font-weight: bold; font-size: 12px; width: fit-content; }
@@ -1617,10 +1619,18 @@
               </div>
               <input type="range" min="0" max="100" value="50" class="sensitivity-slider" id="mic-sens-slider" oninput="updateMicVolume(this.value)" />
               
-              <div style="font-size: 11px; color: #8a8f9d; font-weight: bold; margin-top: 2px;">Sinal de Entrada (Sensibilidade)</div>
+              <div style="font-size: 11px; color: #8a8f9d; font-weight: bold; margin-top: 2px;">Sinal de Entrada</div>
               <div class="mic-test-bar-wrapper">
                 <div class="mic-test-bar-fill" id="mic-test-fill"></div>
+                <div class="mic-test-threshold" id="mic-test-threshold" title="Limiar da detecção de voz"></div>
               </div>
+
+              <div style="display: flex; justify-content: space-between; font-size: 11px; color: #8a8f9d; font-weight: bold; margin-top: 10px;">
+                <span>Sensibilidade da Detecção de Voz</span>
+                <span id="vad-sens-value-text">Limiar: 12</span>
+              </div>
+              <input type="range" min="2" max="60" value="12" class="sensitivity-slider" id="vad-sens-slider" oninput="updateVoiceSensitivity(this.value)" />
+              <div style="font-size: 11px; color: #6c7180; line-height: 1.5;">Pra esquerda = mais sensível (o microfone abre até com sons fracos). Pra direita = menos sensível (só abre com voz mais forte — bom pra quem tem ventilador ou barulho de fundo). A linha branca no medidor acima marca o ponto de corte. Vale pro modo Detecção de Voz.</div>
             </div>
           </div>
 
@@ -2498,7 +2508,13 @@
     let micGateGainNode = null;
     let micDestNode = null; // .stream daqui é o que de fato mandamos pros outros
     let noiseGateRafId = null;
-    const NOISE_GATE_THRESHOLD = 12; // mesma escala do detector de "está falando" (0-255)
+    // Limiar da detecção de voz (mesma escala do detector de "está falando", 0-255).
+    // Ajustável em Configurações > Voz & Áudio; a preferência fica salva no aparelho.
+    const VAD_SENS_DEFAULT = 12;
+    let noiseGateThreshold = (() => {
+      const saved = parseInt(localStorage.getItem('dspeak-vad-sensitivity'), 10);
+      return Number.isFinite(saved) ? Math.min(60, Math.max(2, saved)) : VAD_SENS_DEFAULT;
+    })();
     // ---------- Isolamento de voz ----------
     // Liga/desliga o processamento do microfone: RNNoise (cancelamento de ruído por
     // rede neural — mesma categoria de tecnologia do Krisp do Discord, só que de
@@ -3559,6 +3575,26 @@
         micGainNode.gain.value = currentMicVolume;
       }
     }
+
+    // ---------- Sensibilidade da detecção de voz ----------
+    // Vale na hora: o loop do noise gate lê noiseGateThreshold a cada frame, então
+    // dá pra ajustar no meio da call e ver a linha branca se mexer no medidor.
+    function updateVoiceSensitivity(val) {
+      noiseGateThreshold = Math.min(60, Math.max(2, parseInt(val, 10) || VAD_SENS_DEFAULT));
+      localStorage.setItem('dspeak-vad-sensitivity', String(noiseGateThreshold));
+      syncVoiceSensitivityUI();
+    }
+
+    function syncVoiceSensitivityUI() {
+      const slider = document.getElementById('vad-sens-slider');
+      const text = document.getElementById('vad-sens-value-text');
+      const marker = document.getElementById('mic-test-threshold');
+      if (slider) slider.value = noiseGateThreshold;
+      if (text) text.textContent = `Limiar: ${noiseGateThreshold}`;
+      // Mesma escala do medidor de sinal (média 0-128 vira 0-100% da barra).
+      if (marker) marker.style.left = Math.min(98, Math.round((noiseGateThreshold / 128) * 100)) + '%';
+    }
+    syncVoiceSensitivityUI();
 
     function stopMicTest() {
       if (testMicStream) {
@@ -4825,7 +4861,7 @@
           smoothedLevel = smoothedLevel * 0.85 + rawLevel * 0.15;
           const now = performance.now();
 
-          if (smoothedLevel > NOISE_GATE_THRESHOLD) {
+          if (smoothedLevel > noiseGateThreshold) {
             lastAboveTime = now;
             if (!gateOpen) {
               if (!aboveSince) aboveSince = now; // começou a ficar acima agora — marca o início
@@ -4966,7 +5002,11 @@
           analyser.getByteFrequencyData(data);
           let sum = 0;
           for (let i = 0; i < data.length; i++) sum += data[i];
-          const speaking = (sum / data.length) > SPEAKING_THRESHOLD;
+          // No próprio usuário, o indicador "Falando" segue a sensibilidade configurada —
+          // assim a pílula só acende quando o microfone de fato está transmitindo.
+          const isSelf = typeof socket !== 'undefined' && socket && socketId === socket.id;
+          const limit = isSelf ? Math.max(SPEAKING_THRESHOLD, noiseGateThreshold) : SPEAKING_THRESHOLD;
+          const speaking = (sum / data.length) > limit;
           if (speakingState[socketId] !== speaking) {
             speakingState[socketId] = speaking;
             document.querySelectorAll(`[data-socket-id="${socketId}"]`).forEach(el => el.classList.toggle('speaking', speaking));
