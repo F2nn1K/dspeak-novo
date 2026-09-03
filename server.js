@@ -8,6 +8,7 @@ const crypto = require('crypto');
 const db = require('./db');
 const mail = require('./mail');
 const sfu = require('./sfu');
+const aic = require('./aic');
 
 const app = express();
 const server = http.createServer(app);
@@ -186,6 +187,8 @@ app.get('/turn-credentials', async (req, res) => {
 //      salva no banco, e ao voltar (2-4s) cada cliente re-entra sozinho na
 //      mesma sala de voz (rejoinVoiceIfNeeded já faz isso após o auth-ok).
 const ADMIN_KEY = process.env.ADMIN_KEY || '';
+
+aic.mount(app);
 
 app.get('/client-version', (req, res) => {
   fs.stat(path.join(__dirname, 'public', 'index.html'), (err, st) => {

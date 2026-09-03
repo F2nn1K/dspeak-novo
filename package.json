@@ -12,6 +12,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@ai-coustics/aic-sdk-wasm": "^0.23.0",
     "express": "^5.2.1",
     "firebase-admin": "^13.10.0",
     "mediasoup": "3.19.0",

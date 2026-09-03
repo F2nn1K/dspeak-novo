@@ -1604,8 +1604,8 @@
             <div class="opt-grid">
               <div class="opt-card" id="opt-voice-isolation" onclick="toggleVoiceIsolation()">
                 <div>
-                  <div class="opt-card-title">Cancelamento de ruído (RNNoise)</div>
-                  <div class="opt-card-sub">Rede neural que remove teclado, ventilador e barulho de fundo, + filtro de graves e compressor que nivelam o volume da voz (efeito "voz de rádio"). Roda no seu próprio PC, de graça — clique pra ligar/desligar.</div>
+                  <div class="opt-card-title">Isolamento de voz (Voice Focus)</div>
+                  <div class="opt-card-sub">Corta voz de fundo (TV, celular, outra pessoa na sala), ventilador e teclado — só a sua voz sai. Nos primeiros segundos ele “aprende” quem está no microfone; depois disso o corte fica forte. Clique pra ligar/desligar.</div>
                 </div>
                 <div class="opt-radio-dot"></div>
               </div>
@@ -4719,15 +4719,100 @@
     // de saída. Enquanto o volume estiver abaixo do limiar (ruído de ambiente, teclado, etc.),
     // o ganho fica quase zerado; assim que detecta fala, abre rápido. Segura um pouquinho
     // aberto depois de parar de falar (HOLD_MS) pra não cortar o final da palavra.
-    // ---------- RNNoise (cancelamento de ruído por rede neural) ----------
-    // Mesma categoria de tecnologia que o Krisp usa (rede neural rodando local,
-    // sem mandar áudio pra nenhum servidor) — só que essa aqui (RNNoise) é de
-    // código aberto e gratuita. Carregada da CDN (jsdelivr) uma vez só por sessão
-    // da página — reaproveitada toda vez que o microfone reinicia depois disso,
-    // sem precisar baixar de novo. Fica isolado aqui, no processamento do
-    // MICROFONE — nunca encosta na parte de áudio de tela/transmissão.
+    // ---------- Isolamento de voz: Voice Focus (ai-coustics) + RNNoise de reserva ----------
+    // Voice Focus isola QUEM está no microfone e corta voz de fundo (celular, TV,
+    // outra pessoa). A chave longa nunca entra no cliente — o servidor entrega um
+    // JWT de ~1h. Se o Voice Focus falhar (sem chave, sem rede, trial), cai no
+    // RNNoise (só ruído, não corta outras vozes).
+    const AIC_ENHANCEMENT_LEVEL = 0.85;
     let rnnoiseWasmBinaryPromise = null;
-    let rnnoiseWorkletRegisteredCtx = null; // qual AudioContext já tem o módulo do worklet registrado
+    let rnnoiseWorkletRegisteredCtx = null;
+    let aicWasmPromise = null;
+    let aicProcessor = null;
+    let aicProcCtx = null;
+    let aicScriptNode = null;
+    let aicTokenTimer = null;
+
+    async function fetchAicToken() {
+      const r = await fetch('/api/aic/token', { credentials: 'same-origin' });
+      const j = await r.json();
+      if (!j || !j.ok || !j.token) throw new Error((j && j.error) || 'sem-token');
+      return j.token;
+    }
+
+    async function ensureAicWasm() {
+      if (aicWasmPromise) return aicWasmPromise;
+      aicWasmPromise = (async () => {
+        const mod = await import('/vendor/aic-sdk-wasm/aic_sdk_wasm.js');
+        await mod.default();
+        const modelResp = await fetch('/aic/model.aicmodel');
+        if (!modelResp.ok) throw new Error('modelo-indisponivel');
+        const bytes = new Uint8Array(await modelResp.arrayBuffer());
+        const model = mod.Model.fromBytes(bytes);
+        return { mod, model };
+      })();
+      return aicWasmPromise;
+    }
+
+    function stopAicProcessor() {
+      if (aicTokenTimer) { clearInterval(aicTokenTimer); aicTokenTimer = null; }
+      if (aicScriptNode) {
+        try { aicScriptNode.disconnect(); } catch (e) {}
+        aicScriptNode.onaudioprocess = null;
+        aicScriptNode = null;
+      }
+      if (aicProcessor) {
+        try { aicProcessor.terminateSession(); } catch (e) {}
+        try { aicProcessor.free(); } catch (e) {}
+        aicProcessor = null;
+        aicProcCtx = null;
+      }
+    }
+
+    async function ensureAicVoiceFocusNode(ctx) {
+      stopAicProcessor();
+      const { mod, model } = await ensureAicWasm();
+      const token = await fetchAicToken();
+      const processor = new mod.Processor(model, token);
+      const blockSize = 512;
+      processor.initialize(ctx.sampleRate, blockSize, false);
+      const pctx = processor.getProcessorContext();
+      pctx.setParameter(mod.ProcessorParameter.EnhancementLevel, AIC_ENHANCEMENT_LEVEL);
+
+      const sp = ctx.createScriptProcessor(blockSize, 1, 1);
+      const buf = new Float32Array(blockSize);
+      sp.onaudioprocess = (e) => {
+        const inputBuf = e.inputBuffer;
+        const output = e.outputBuffer.getChannelData(0);
+        const ch0 = inputBuf.getChannelData(0);
+        if (inputBuf.numberOfChannels === 1) {
+          buf.set(ch0);
+        } else {
+          const nch = inputBuf.numberOfChannels;
+          for (let i = 0; i < blockSize; i++) {
+            let s = 0;
+            for (let c = 0; c < nch; c++) s += inputBuf.getChannelData(c)[i];
+            buf[i] = s / nch;
+          }
+        }
+        try {
+          processor.process(buf);
+          output.set(buf);
+        } catch (err) {
+          output.set(ch0);
+        }
+      };
+
+      aicProcessor = processor;
+      aicProcCtx = pctx;
+      aicScriptNode = sp;
+      aicTokenTimer = setInterval(() => {
+        fetchAicToken().then((t) => {
+          try { if (aicProcCtx) aicProcCtx.updateBearerToken(t); } catch (e) {}
+        }).catch(() => {});
+      }, 40 * 60 * 1000);
+      return sp;
+    }
 
     async function ensureRnnoiseReady(ctx) {
       if (!rnnoiseWasmBinaryPromise) {
@@ -4823,25 +4908,29 @@
         const data = new Uint8Array(analyser.frequencyBinCount);
 
         const thisCtx = micProcessingCtx; // guarda a referência — se o mic reiniciar de novo antes disso terminar, não mexe no contexto errado
-        ensureRnnoiseReady(thisCtx).then((rnnoiseNode) => {
+        const attachEnhancer = (enhancerNode, label) => {
           if (micProcessingCtx !== thisCtx || thisCtx.state === 'closed') {
-            // O microfone já reiniciou de novo (ou foi desligado) enquanto isso
-            // carregava — descarta esse resultado, não se conecta a nada.
-            try { rnnoiseNode.disconnect(); } catch (e) {}
+            try { enhancerNode.disconnect(); } catch (e) {}
             return;
           }
-          // Encaixa o RNNoise ENTRE o microfone cru e o resto da cadeia (passa-alta →
-          // compressor → limiter → portão) — troca a conexão direta que já tínhamos
-          // feito acima por uma passando pela limpeza neural primeiro.
           micSourceNode.disconnect(micHighPass);
-          micSourceNode.connect(rnnoiseNode);
-          rnnoiseNode.connect(micHighPass);
-          gateInputNode = rnnoiseNode;
+          micSourceNode.connect(enhancerNode);
+          enhancerNode.connect(micHighPass);
+          gateInputNode = enhancerNode;
           analyser.disconnect();
           gateInputNode.connect(analyser);
-          console.log('[Mic] RNNoise carregado — cancelamento de ruído por rede neural ativo.');
+          console.log('[Mic] Isolamento ativo:', label);
+        };
+
+        ensureAicVoiceFocusNode(thisCtx).then((aicNode) => {
+          attachEnhancer(aicNode, 'Voice Focus 0.85 (corta voz de fundo)');
         }).catch((err) => {
-          console.warn('[Mic] Não consegui carregar o RNNoise — seguindo só com o portão de ruído normal.', err);
+          console.warn('[Mic] Voice Focus indisponível — caindo no RNNoise:', err && err.message);
+          return ensureRnnoiseReady(thisCtx).then((rnnoiseNode) => {
+            attachEnhancer(rnnoiseNode, 'RNNoise (só ruído; Voice Focus falhou)');
+          }).catch((err2) => {
+            console.warn('[Mic] Nem Voice Focus nem RNNoise carregaram — seguindo só com o portão de ruído.', err2);
+          });
         });
 
         // Foca a leitura de volume só na faixa de frequência da VOZ humana (~200Hz a
@@ -4934,6 +5023,7 @@
     function teardownMicProcessing() {
       if (noiseGateRafId) cancelAnimationFrame(noiseGateRafId);
       noiseGateRafId = null;
+      stopAicProcessor();
       if (micProcessingCtx) micProcessingCtx.close().catch(() => {});
       micProcessingCtx = null;
       micSourceNode = null;
@@ -4985,7 +5075,7 @@
       // então a mudança vale imediatamente, sem sair e voltar da sala.
       if (localMicStream) restartLocalMic();
       showToast(micProcessingEnabled
-        ? 'Isolamento de voz LIGADO — ruído de fundo sendo removido pela rede neural.'
+        ? 'Isolamento de voz LIGADO — Voice Focus corta voz de fundo e ruído (nos primeiros segundos ele aprende a sua voz).'
         : 'Isolamento de voz desligado — áudio do microfone saindo sem tratamento extra.');
     }
     updateVoiceIsolationCard();

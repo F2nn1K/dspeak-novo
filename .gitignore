@@ -18,6 +18,8 @@ downloads/
 # Ambiente / segredos
 .env
 .env.*
+key.txt
+aic-cache/
 
 # Sistema operacional
 Thumbs.db
