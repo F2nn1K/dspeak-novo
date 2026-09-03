@@ -4853,7 +4853,11 @@
         // uma batida de tecla é rápida demais (poucos ms) pra se sustentar por isso;
         // voz de verdade começando já se sustenta naturalmente.
         const ATTACK_MS = 120;
-        const GATE_CLOSED_GAIN = 0.05; // bem mais baixo que antes — quase mudo quando fechado
+        // ZERO de verdade: com 0.05 (5%) ainda vazava fundo — e pior, o compressor
+        // mais adiante na cadeia "nivelava" esse resto pra cima, então quem ouvia
+        // pegava ventilador/ambiente mesmo com o portão fechado. Abaixo da linha
+        // branca agora é SILÊNCIO total; o portão só abre quando a voz passa dela.
+        const GATE_CLOSED_GAIN = 0;
 
         const tick = () => {
           if (!micProcessingCtx || micProcessingCtx.state === 'closed') return;
