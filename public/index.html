@@ -7506,6 +7506,12 @@
         codecOptions: { opusStereo: true, opusDtx: false, opusFec: true, opusMaxAverageBitrate: 256000 },
         appData: { type: 'screen-audio' }
       });
+      // ESSENCIAL: o áudio de programa costuma chegar SEGUNDOS depois da live
+      // começar (IPC do app desktop + mixer). Quem já estava assistindo consumiu
+      // só o vídeo — sem este aviso, a sala nunca re-consome e fica SEM SOM pra
+      // sempre. Com ele, o servidor manda todo mundo re-consumir 'screen' e o
+      // áudio novo entra junto.
+      socket.emit('sfu-new-producer');
     }
 
     // ---------- Codec de vídeo: H.264 primeiro ----------
