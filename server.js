@@ -51,6 +51,14 @@ app.get('/m/:id', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+// Landing: "Iniciar reunião instantânea" cria a sala e manda direto pro /m/xxx
+// (POST pra crawler/prefetch não gerar sala sem querer).
+app.post('/meet/new', (req, res) => {
+  const result = tryCreateMeeting(requestIp(req), '');
+  if (!result.ok) return res.redirect('/app');
+  res.redirect('/m/' + result.meeting.id);
+});
+
 // Atalho amigável: /login e /download levam pros lugares certos.
 app.get('/login', (req, res) => res.redirect('/app'));
 app.get('/download', (req, res) => res.redirect('/download/windows'));
@@ -397,6 +405,34 @@ function generateMeetingId() {
     .map(b => 'abcdefghijkmnpqrstuvwxyz'[b % 24]).join('');
   const raw = letters();
   return `${raw.slice(0, 3)}-${raw.slice(3, 7)}-${raw.slice(7, 8)}${letters().slice(0, 2)}`;
+}
+
+function requestIp(req) {
+  return String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+}
+
+// Rate limit + criação da sala. Usado pelo socket (tela de login) e pelo
+// POST /meet/new (botão da landing). Mesma regra: no máximo 5 por IP a cada 10 min.
+function tryCreateMeeting(ip, hostName) {
+  const now = Date.now();
+  const key = String(ip || '').trim() || 'unknown';
+  meetingCreationByIp[key] = (meetingCreationByIp[key] || []).filter(t => now - t < 10 * 60 * 1000);
+  if (meetingCreationByIp[key].length >= 5) {
+    return { error: 'rate-limited', message: 'Calma! Você criou reuniões demais — espera uns minutos.' };
+  }
+  meetingCreationByIp[key].push(now);
+
+  let id;
+  do { id = generateMeetingId(); } while (meetings[id]);
+  meetings[id] = {
+    id,
+    createdAt: now,
+    expiresAt: now + MEETING_TTL_MS,
+    warned: false,
+    hostName: String(hostName || '').trim().slice(0, 30)
+  };
+  console.log(`[Reunião] ${id} criada (${meetings[id].hostName || 'sem nome'}).`);
+  return { ok: true, meeting: meetings[id] };
 }
 
 function meetingChannelId(id) { return 'meeting:' + id; }
@@ -1455,24 +1491,9 @@ io.on('connection', (socket) => {
   socket.on('create-meeting', (data, cb) => {
     if (typeof cb !== 'function') return;
     const ip = String(socket.handshake.headers['x-forwarded-for'] || socket.handshake.address || '').split(',')[0].trim();
-    const now = Date.now();
-    meetingCreationByIp[ip] = (meetingCreationByIp[ip] || []).filter(t => now - t < 10 * 60 * 1000);
-    if (meetingCreationByIp[ip].length >= 5) {
-      return cb({ error: 'rate-limited', message: 'Calma! Você criou reuniões demais — espera uns minutos.' });
-    }
-    meetingCreationByIp[ip].push(now);
-
-    let id;
-    do { id = generateMeetingId(); } while (meetings[id]);
-    meetings[id] = {
-      id,
-      createdAt: now,
-      expiresAt: now + MEETING_TTL_MS,
-      warned: false,
-      hostName: String((data && data.name) || '').trim().slice(0, 30)
-    };
-    console.log(`[Reunião] ${id} criada (${meetings[id].hostName || 'sem nome'}).`);
-    cb({ ok: true, meetingId: id, expiresAt: meetings[id].expiresAt });
+    const result = tryCreateMeeting(ip, (data && data.name) || '');
+    if (!result.ok) return cb({ error: result.error, message: result.message });
+    cb({ ok: true, meetingId: result.meeting.id, expiresAt: result.meeting.expiresAt });
   });
 
   // Entrar numa reunião: se já tem sessão logada usa o nome da conta; senão vira

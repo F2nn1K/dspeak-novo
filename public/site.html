@@ -140,6 +140,12 @@
     }
     .hero-btns { display: flex; gap: 14px; margin-top: 36px; flex-wrap: wrap; justify-content: center; }
     .hero-note { margin-top: 16px; font-size: 13px; color: var(--muted-2); }
+    .hero-meeting {
+      margin-top: 22px; display: flex; flex-direction: column; align-items: center; gap: 10px;
+    }
+    .hero-meeting form { margin: 0; }
+    .hero-meeting .btn { min-width: min(340px, 86vw); }
+    .hero-meeting-note { font-size: 13px; color: var(--muted-2); text-align: center; max-width: 420px; line-height: 1.5; }
     .scroll-hint {
       position: absolute; bottom: 26px; left: 50%; transform: translateX(-50%); z-index: 2;
       width: 26px; height: 42px; border: 2px solid rgba(255,255,255,0.25); border-radius: 14px;
@@ -317,6 +323,15 @@
         <a class="btn btn-ghost" href="/app">Abrir no navegador</a>
       </div>
       <div class="hero-note">Grátis • Sem anúncio • Funciona no navegador também</div>
+      <div class="hero-meeting">
+        <form action="/meet/new" method="post">
+          <button class="btn btn-ghost" type="submit">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+            Iniciar reunião instantânea
+          </button>
+        </form>
+        <div class="hero-meeting-note">Sem conta: você recebe um link de 40 min pra chamar qualquer pessoa.</div>
+      </div>
     </div>
     <div class="scroll-hint"></div>
   </header>
@@ -438,6 +453,12 @@
             Baixar para Android
           </a>
           <a class="btn btn-ghost" href="/app">Entrar no navegador</a>
+          <form action="/meet/new" method="post" style="margin:0;">
+            <button class="btn btn-ghost" type="submit">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+              Iniciar reunião instantânea
+            </button>
+          </form>
         </div>
       </div>
     </div>

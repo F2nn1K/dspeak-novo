@@ -1671,15 +1671,15 @@
             <div class="opt-sec-label" style="margin-top: 6px;">QUALIDADE DE IMAGEM</div>
             <div class="opt-grid">
               <div class="opt-card" id="opt-quality-low" onclick="selectStreamQuality('low')">
-                <div><div class="opt-card-title">Padrão</div><div class="opt-card-sub">Menos dados, melhor pra internet fraca (~2.5 Mbps)</div></div>
+                <div><div class="opt-card-title">Padrão</div><div class="opt-card-sub">Menos dados, melhor pra internet fraca (~1 Mbps)</div></div>
                 <div class="opt-radio-dot"></div>
               </div>
               <div class="opt-card selected" id="opt-quality-medium" onclick="selectStreamQuality('medium')">
-                <div><div class="opt-card-title">Alta</div><div class="opt-card-sub">Bom equilíbrio entre nitidez e estabilidade (~6 Mbps, padrão)</div></div>
+                <div><div class="opt-card-title">Alta</div><div class="opt-card-sub">Bom equilíbrio entre nitidez e estabilidade (~2.5 Mbps, padrão)</div></div>
                 <div class="opt-radio-dot"></div>
               </div>
               <div class="opt-card" id="opt-quality-high" onclick="selectStreamQuality('high')">
-                <div><div class="opt-card-title">Máxima</div><div class="opt-card-sub">Imagem mais nítida possível, exige boa internet (~12 Mbps)</div></div>
+                <div><div class="opt-card-title">Máxima</div><div class="opt-card-sub">Imagem mais nítida possível, exige boa internet (~6 Mbps)</div></div>
                 <div class="opt-radio-dot"></div>
               </div>
             </div>
@@ -2431,7 +2431,10 @@
     let selectedResolution = localStorage.getItem('dspeak_stream_res') || "720";
     let selectedFps = localStorage.getItem('dspeak_stream_fps') || "30";
     let selectedStreamQuality = localStorage.getItem('dspeak_stream_quality') || "medium"; // low | medium | high — controla o bitrate da transmissão
-    const STREAM_QUALITY_BITRATES = { low: 2_500_000, medium: 6_000_000, high: 12_000_000 };
+    // Bitrates realistas (estilo Discord): 6–12 Mbps era exagero — obrigava o
+    // encoder a trabalhar dobrado e quem assistia a decodificar um rio de dados,
+    // sem ganho visível numa tela 720p/1080p de tela compartilhada.
+    const STREAM_QUALITY_BITRATES = { low: 1_000_000, medium: 2_500_000, high: 6_000_000 };
     let selectedInputMode = "vad";
     // Item 9: Push-to-Talk — a tecla configurada (código do evento de teclado, ex:
     // "Space", "KeyF") e se ela está sendo segurada NESSE momento. Guardado no
@@ -5161,7 +5164,12 @@
       return null;
     }
 
-    function watchLiveStream(targetSocketId) {
+    // opts.auto = true quando a live está abrindo SOZINHA pra sala toda (sem clique).
+    // Nesse caso, se o SFU falhar, NÃO caímos no mesh: no mesh o transmissor codifica
+    // um vídeo separado pra cada espectador — com a sala inteira caindo nele ao mesmo
+    // tempo, é exatamente o que estourava a CPU em ~100%. Quem quiser assistir mesmo
+    // assim clica em "Assistir" (aí sim o mesh vale, porque é um de cada vez).
+    function watchLiveStream(targetSocketId, opts = {}) {
       // Já pedimos (ou já estamos vendo) essa transmissão — um clique duplicado (ex:
       // clique duplo sem querer, antes da tela trocar o botão) não deve mandar um
       // pedido novo. Sem essa trava, o segundo pedido não gerava resposta nenhuma
@@ -5199,8 +5207,25 @@
       // streamer). Se o streamer não publicou lá, cai no pedido mesh antigo.
       if (sfuAvailable) {
         sfuWatch(targetSocketId).then(ok => {
-          if (!ok && watchedStreams[targetSocketId]) socket.emit('request-watch-stream', { targetSocketId });
+          if (!ok && watchedStreams[targetSocketId]) {
+            if (opts.auto) {
+              // Abertura automática sem SFU disponível pra essa live: desiste em
+              // silêncio e deixa o botão "Assistir" à mostra (mesh só no clique).
+              watchedStreams[targetSocketId] = false;
+              clearTimeout(watchStreamTimeouts[targetSocketId]);
+              renderChannels();
+              renderStageUsers();
+              return;
+            }
+            socket.emit('request-watch-stream', { targetSocketId });
+          }
         });
+      } else if (opts.auto) {
+        // Servidor de mídia fora do ar: nada de auto-mesh pra sala toda.
+        watchedStreams[targetSocketId] = false;
+        renderChannels();
+        renderStageUsers();
+        return;
       } else {
         socket.emit('request-watch-stream', { targetSocketId });
       }
@@ -7483,6 +7508,32 @@
       });
     }
 
+    // ---------- Codec de vídeo: H.264 primeiro ----------
+    // O VP8 (padrão do WebRTC) é codificado/decodificado quase sempre por SOFTWARE
+    // (CPU) no Chrome/Electron. O H.264 usa o encoder/decoder de HARDWARE da placa
+    // de vídeo na grande maioria dos PCs — é isso que derruba o uso de CPU de quem
+    // transmite E de quem assiste. Se o navegador não tiver H.264 (raro), o produce
+    // cai sozinho no codec padrão e nada quebra.
+    function sfuPickH264Codec() {
+      try {
+        const codecs = (sfuDevice && sfuDevice.rtpCapabilities && sfuDevice.rtpCapabilities.codecs) || [];
+        return codecs.find(c => /video\/h264/i.test(c.mimeType)) || null;
+      } catch (e) { return null; }
+    }
+
+    // produce() de vídeo tentando H.264 primeiro; se der erro, refaz sem forçar codec.
+    async function sfuProduceVideo(opts) {
+      const codec = sfuPickH264Codec();
+      if (codec) {
+        try {
+          return await sfuSendTransport.produce({ ...opts, codec });
+        } catch (e) {
+          console.warn('[SFU] H.264 indisponível aqui — seguindo com o codec padrão:', e && e.message);
+        }
+      }
+      return await sfuSendTransport.produce(opts);
+    }
+
     // Publica (ou re-publica, após troca de janela) a tela atual no SFU.
     async function sfuPublishScreen() {
       if (!sfuAvailable || !localStream) return false;
@@ -7498,7 +7549,7 @@
           // Troca de janela no meio da live: só troca o conteúdo, sem renegociar.
           await sfuVideoProducer.replaceTrack({ track: videoTrack });
         } else {
-          sfuVideoProducer = await sfuSendTransport.produce({
+          sfuVideoProducer = await sfuProduceVideo({
             track: videoTrack,
             encodings: [{ maxBitrate: STREAM_QUALITY_BITRATES[selectedStreamQuality] || STREAM_QUALITY_BITRATES.medium }],
             appData: { type: 'screen-video' }
@@ -7530,7 +7581,7 @@
           socket.emit('sfu-close-producer', { producerId: old.id });
           try { old.close(); } catch (e) {}
         }
-        sfuVideoProducer = await sfuSendTransport.produce({
+        sfuVideoProducer = await sfuProduceVideo({
           track,
           encodings: [{ maxBitrate: STREAM_QUALITY_BITRATES[selectedStreamQuality] || STREAM_QUALITY_BITRATES.medium }],
           appData: { type: 'screen-video' }
@@ -7795,7 +7846,7 @@
         if (!sfuSendTransport || sfuSendTransport.closed) sfuSendTransport = await sfuCreateTransport('send');
         const track = cameraStream.getVideoTracks()[0];
         track.onended = () => stopCamera(); // câmera desconectada/uso negado no meio
-        sfuCameraProducer = await sfuSendTransport.produce({
+        sfuCameraProducer = await sfuProduceVideo({
           track,
           encodings: [{ maxBitrate: 900000 }],
           appData: { source: 'camera' }
@@ -8592,7 +8643,7 @@
           // Só abre sozinho se o transmissor está na mesma sala que nós (targetUser
           // encontrado) — lives de outras salas continuam exigindo clique, porque
           // assistir implicaria em ser movido de sala.
-          if (targetUser) watchLiveStream(targetSocketId);
+          if (targetUser) watchLiveStream(targetSocketId, { auto: true });
         }
       });
       renderChannels();
@@ -8605,7 +8656,7 @@
         const targetUser = usersInChannel.find(u => u.socketId === targetSocketId);
         liveStreamers[targetSocketId] = targetUser ? targetUser.name : "Amigo";
         playSound('streamStart');
-        if (targetUser) watchLiveStream(targetSocketId);
+        if (targetUser) watchLiveStream(targetSocketId, { auto: true });
         renderChannels();
         renderStageUsers();
       }
