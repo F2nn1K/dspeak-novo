@@ -8092,6 +8092,16 @@
         // transmissão pronta no servidor. Se falhar, o mesh antigo assume.
         if (sfuAvailable) {
           try { await sfuPublishScreen(); } catch (e) { console.error('[SFU] publicar falhou:', e); }
+          // Mostra qual codec de vídeo REALMENTE ficou ativo — serve pra confirmar
+          // na prática se o H.264 (encode por hardware, CPU leve) está em uso ou se
+          // o navegador caiu no VP8 por software.
+          try {
+            const prms = (sfuVideoProducer && sfuVideoProducer.rtpSender) ? sfuVideoProducer.rtpSender.getParameters() : null;
+            const mime = (prms && prms.codecs && prms.codecs[0]) ? prms.codecs[0].mimeType : '';
+            if (/h264/i.test(mime)) showToast('Transmitindo em H.264 (aceleração por hardware) — uso de CPU reduzido.');
+            else if (mime) showToast(`Transmitindo em ${mime.split('/')[1]} — H.264 não disponível neste dispositivo.`);
+            if (mime) console.log('[SFU] Codec de vídeo da transmissão:', mime);
+          } catch (e) { /* só informativo, nunca pode travar a live */ }
         }
         socket.emit('start-streaming', connectedVoiceChannel);
 
