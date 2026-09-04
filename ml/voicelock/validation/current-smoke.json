@@ -1,0 +1,52 @@
+{
+  "date": "2026-09-03",
+  "model": "untrained-contract-smoke-only",
+  "host": {
+    "os": "Windows 11",
+    "logicalCores": 12
+  },
+  "results": {
+    "chrome-152-wasm-warm": {
+      "frameAverageMs": 2.403,
+      "frameP95Ms": 4.2,
+      "realtimeFactor": 0.12,
+      "hushReady": true,
+      "pass": true
+    },
+    "edge-152-wasm-warm": {
+      "frameAverageMs": 2.736,
+      "frameP95Ms": 4.3,
+      "realtimeFactor": 0.137,
+      "hushReady": true,
+      "pass": true
+    },
+    "firefox-155-wasm": {
+      "frameAverageMs": 1.64,
+      "frameP95Ms": 3.0,
+      "realtimeFactor": 0.082,
+      "hushReady": true,
+      "pass": true
+    },
+    "electron-44-wasm": {
+      "frameAverageMs": 2.82,
+      "frameP95Ms": 4.7,
+      "realtimeFactor": 0.141,
+      "hushReady": true,
+      "pass": true
+    },
+    "android-16-webview-emulator-2core-2gb": {
+      "frameAverageMs": 4.027,
+      "frameP95Ms": 9.9,
+      "realtimeFactor": 0.201,
+      "hushReady": true,
+      "pass": false,
+      "note": "Emulador valida compatibilidade, mas não substitui Android físico."
+    }
+  },
+  "limitations": [
+    "Pesos aleatórios: mede somente contrato e desempenho, não qualidade.",
+    "Ainda faltam Windows AMD e Intel físicos.",
+    "Ainda faltam Android físico de entrada e intermediário.",
+    "A promoção para produção permanece bloqueada."
+  ]
+}

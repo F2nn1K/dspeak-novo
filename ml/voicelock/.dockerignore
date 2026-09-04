@@ -1,0 +1,13 @@
+.venv
+__pycache__
+*.pyc
+.git
+data
+manifests
+artifacts
+exports
+runs
+*.pt
+*.pth
+*.ckpt
+*.onnx

@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DSpeak VoiceLock — Diagnóstico</title>
+  <style>
+    :root{color-scheme:dark;font-family:Inter,Segoe UI,sans-serif}body{margin:0;background:#0d0f15;color:#f5f6fa;min-height:100vh;display:grid;place-items:center}
+    main{width:min(760px,calc(100% - 32px));background:#151821;border:1px solid #343947;border-radius:18px;padding:28px;box-sizing:border-box}
+    h1{color:#ff5a00;margin-top:0}p{color:#aeb4c2;line-height:1.55}.row{display:flex;gap:10px;flex-wrap:wrap}
+    select,input,button{background:#0f1219;color:#fff;border:1px solid #424858;border-radius:8px;padding:10px}
+    input{flex:1;min-width:260px}button{background:#ff5a00;border:0;font-weight:700;cursor:pointer}button:disabled{opacity:.45}
+    pre{white-space:pre-wrap;background:#090b10;border-radius:10px;padding:16px;min-height:160px;color:#aef2da;overflow:auto}
+    .pass{color:#44e2a2}.fail{color:#ff6b6b}
+  </style>
+</head>
+<body>
+<main>
+  <h1>Diagnóstico VoiceLock</h1>
+  <p>Executa apenas sinais sintéticos; nenhum microfone ou áudio pessoal é usado.
+     Rode em cada aparelho da matriz antes de aprovar os pesos.</p>
+  <div class="row">
+    <input id="manifest" value="/models/voicelock/manifest.json" aria-label="URL do manifest">
+    <select id="backend" aria-label="Backend">
+      <option value="auto">Automático</option>
+      <option value="wasm">WASM</option>
+      <option value="webgpu">WebGPU</option>
+    </select>
+    <button id="run">Executar</button>
+    <button id="download" disabled>Baixar JSON</button>
+  </div>
+  <p id="verdict"></p>
+  <pre id="output">Pronto.</pre>
+</main>
+<script type="module">
+  const isAndroidWebView = /Android/i.test(navigator.userAgent) &&
+    /wv|WebView/i.test(navigator.userAgent);
+  const { default: VoiceLockEngine } = await import(
+    isAndroidWebView ? "./voicelock-engine.js" : "./voicelock-worker-client.js"
+  );
+  const output = document.querySelector("#output");
+  const verdict = document.querySelector("#verdict");
+  let lastReport = null;
+
+  function percentile(values, fraction) {
+    const ordered = [...values].sort((a,b)=>a-b);
+    return ordered[Math.min(ordered.length-1, Math.floor(ordered.length*fraction))];
+  }
+
+  document.querySelector("#run").onclick = async () => {
+    const run = document.querySelector("#run");
+    run.disabled = true;
+    verdict.textContent = "";
+    output.textContent = "Carregando runtime e modelos…";
+    const engine = new VoiceLockEngine({
+      manifestUrl: document.querySelector("#manifest").value,
+      backend: document.querySelector("#backend").value
+    });
+    try {
+      const initAt = performance.now();
+      await engine.initialize();
+      const initMs = performance.now() - initAt;
+      const enrollment = new Float32Array(192000);
+      for (let i=0;i<enrollment.length;i++) enrollment[i]=Math.sin(2*Math.PI*180*i/48000)*.08;
+      const enrollAt = performance.now();
+      await engine.enroll(enrollment);
+      const enrollmentMs = performance.now() - enrollAt;
+      const frame = new Float32Array(engine.frameSamples48k);
+      const frameDurationMs = frame.length * 1000 / 48000;
+      for (let i=0;i<frame.length;i++) frame[i]=Math.sin(2*Math.PI*180*i/48000)*.04;
+      const times = [];
+      for (let n=0;n<110;n++) {
+        const at=performance.now();
+        await engine.processFrame(frame);
+        if (n>=10) times.push(performance.now()-at);
+      }
+      const average=times.reduce((sum,value)=>sum+value,0)/times.length;
+      const p50=percentile(times,.50), p95=percentile(times,.95), max=Math.max(...times);
+      let hush = { ready:false, initMs:null, error:null };
+      try {
+        const config = await fetch("/api/voicelock/config", { cache:"no-store" }).then(r=>r.json());
+        const { DeepFilterNet3Core } = await import("./vendor/deepfilter-core.js");
+        const hushStarted = performance.now();
+        const filter = new DeepFilterNet3Core({
+          sampleRate:48000,
+          noiseReductionLevel:100,
+          assetConfig:{cdnUrl:config.postFilterBaseUrl}
+        });
+        await filter.initialize();
+        const audioContext = new AudioContext({sampleRate:48000});
+        await audioContext.resume();
+        const node = await filter.createAudioWorkletNode(audioContext);
+        const oscillator = audioContext.createOscillator();
+        const gain = audioContext.createGain();
+        const destination = audioContext.createMediaStreamDestination();
+        gain.gain.value=.01;
+        oscillator.connect(gain).connect(node).connect(destination);
+        oscillator.start();
+        await new Promise(resolve=>setTimeout(resolve,300));
+        oscillator.stop();
+        destination.stream.getTracks().forEach(track=>track.stop());
+        hush = {ready:filter.isReady(),initMs:+(performance.now()-hushStarted).toFixed(3),error:null};
+        filter.destroy();
+        await audioContext.close();
+      } catch(error) {
+        hush = {ready:false,initMs:null,error:error.message};
+      }
+      lastReport = {
+        timestamp:new Date().toISOString(),
+        userAgent:navigator.userAgent,
+        platform:navigator.platform,
+        hardwareConcurrency:navigator.hardwareConcurrency || null,
+        deviceMemory:navigator.deviceMemory || null,
+        webGpuExposed:Boolean(navigator.gpu),
+        backend:engine.backend,
+        initMs:+initMs.toFixed(3),
+        enrollmentMs:+enrollmentMs.toFixed(3),
+        frameAverageMs:+average.toFixed(3),
+        frameP50Ms:+p50.toFixed(3),
+        frameP95Ms:+p95.toFixed(3),
+        frameMaxMs:+max.toFixed(3),
+        frameDurationMs,
+        realtimeFactor:+(average/frameDurationMs).toFixed(3),
+        hush,
+        pass:p95<=5 && average/frameDurationMs<=.25 && hush.ready
+      };
+      output.textContent=JSON.stringify(lastReport,null,2);
+      verdict.textContent=lastReport.pass
+        ?"APROVADO no gate de processamento por frame."
+        :"REPROVADO: p95 acima de 5 ms ou RTF acima de 0,25.";
+      verdict.className=lastReport.pass?"pass":"fail";
+      document.querySelector("#download").disabled=false;
+    } catch(error) {
+      lastReport=null;
+      output.textContent=JSON.stringify({code:error.code||"ERROR",message:error.message},null,2);
+      verdict.textContent="Falha no diagnóstico.";
+      verdict.className="fail";
+    } finally {
+      await engine.dispose().catch(()=>{});
+      run.disabled=false;
+    }
+  };
+
+  document.querySelector("#download").onclick=()=>{
+    if(!lastReport)return;
+    const blob=new Blob([JSON.stringify(lastReport,null,2)],{type:"application/json"});
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(blob);
+    a.download=`voicelock-diagnostic-${lastReport.backend}.json`;
+    a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+  };
+</script>
+</body>
+</html>

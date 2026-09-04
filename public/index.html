@@ -512,6 +512,21 @@
     .mic-test-threshold { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff; border-radius: 1px; box-shadow: 0 0 5px rgba(255,255,255,0.9); pointer-events: none; }
     .sensitivity-slider { width: 100%; accent-color: #ff5500; cursor: pointer; }
 
+    #voicelock-calibration-modal { z-index: 7200; padding: 18px; box-sizing: border-box; }
+    .voicelock-calibration-card { width: min(460px, calc(100vw - 36px)); text-align: center; align-items: center; gap: 14px; }
+    .voicelock-orb { width: 92px; height: 92px; border-radius: 50%; display: grid; place-items: center; position: relative; background: radial-gradient(circle at 35% 30%, #ff9a5c, #ff5500 48%, #6b2100 100%); box-shadow: 0 0 0 8px rgba(255,85,0,.08), 0 0 45px rgba(255,85,0,.42); }
+    .voicelock-orb::before { content: ""; width: 29px; height: 39px; border: 4px solid white; border-radius: 15px; box-sizing: border-box; }
+    .voicelock-orb::after { content: ""; position: absolute; width: 45px; height: 24px; border: 4px solid white; border-top: 0; border-radius: 0 0 24px 24px; bottom: 20px; }
+    .voicelock-orb.listening { animation: voiceLockPulse .9s ease-in-out infinite alternate; }
+    @keyframes voiceLockPulse { to { transform: scale(1.06); box-shadow: 0 0 0 14px rgba(255,85,0,.04), 0 0 70px rgba(255,85,0,.68); } }
+    .voicelock-calibration-card h2 { margin: 2px 0 0; font-size: 22px; }
+    .voicelock-calibration-card p { margin: 0; color: #aeb4c2; font-size: 13px; line-height: 1.55; }
+    .voicelock-progress { width: 100%; height: 9px; border-radius: 20px; overflow: hidden; background: #272b35; border: 1px solid rgba(255,255,255,.07); }
+    .voicelock-progress > span { display: block; height: 100%; width: 0; border-radius: inherit; background: linear-gradient(90deg,#ff5500,#ff9b60); transition: width 80ms linear; }
+    .voicelock-confidence { min-height: 18px; color: #ffb18a; font-size: 12px; font-weight: 700; }
+    .voicelock-actions { display: flex; justify-content: center; gap: 10px; width: 100%; }
+    .voicelock-privacy { color: #676d7b !important; font-size: 10px !important; }
+
     .shortcut-key-badge { background: #181b24; border: 1px solid #ff5500; color: #ff5500; padding: 4px 10px; border-radius: 6px; font-weight: bold; font-size: 12px; width: fit-content; }
     .shortcut-key-badge.capturing { background: rgba(255,85,0,0.15); animation: welcomeGlowPulse 1s ease-in-out infinite; }
 
@@ -1477,6 +1492,24 @@
     <div class="uvp-hint">Só muda o que <strong>você</strong> ouve — ninguém mais é afetado.</div>
   </div>
 
+  <div class="modal-overlay" id="voicelock-calibration-modal">
+    <div class="modal voicelock-calibration-card">
+      <div class="voicelock-orb" id="voicelock-calibration-orb"></div>
+      <h2 id="voicelock-calibration-title">Calibrar sua voz</h2>
+      <p id="voicelock-calibration-instructions">
+        Fique perto do microfone e fale normalmente durante quatro segundos.
+        Enquanto calibramos, ninguém na sala recebe o seu áudio.
+      </p>
+      <div class="voicelock-progress"><span id="voicelock-calibration-progress"></span></div>
+      <div class="voicelock-confidence" id="voicelock-calibration-status">Pronto para começar</div>
+      <div class="voicelock-actions">
+        <button class="btn-cancel" type="button" id="voicelock-calibration-cancel">Usar modo padrão</button>
+        <button class="btn-create" type="button" id="voicelock-calibration-start">Começar calibração</button>
+      </div>
+      <p class="voicelock-privacy">A assinatura fica apenas na memória deste aparelho e é apagada ao sair da call.</p>
+    </div>
+  </div>
+
   <div class="modal-overlay" id="settings-center-modal">
     <div class="modal settings-modal">
       <button class="modal-close-btn" onclick="closeModal('settings-center-modal')">✕</button>
@@ -1604,8 +1637,8 @@
             <div class="opt-grid">
               <div class="opt-card" id="opt-voice-isolation" onclick="toggleVoiceIsolation()">
                 <div>
-                  <div class="opt-card-title">Isolamento de voz (Voice Focus)</div>
-                  <div class="opt-card-sub">Corta voz de fundo (TV, celular, outra pessoa na sala), ventilador e teclado — só a sua voz sai. Nos primeiros segundos ele “aprende” quem está no microfone; depois disso o corte fica forte. Clique pra ligar/desligar.</div>
+                  <div class="opt-card-title" id="voice-isolation-title">Isolamento de voz (Voice Focus)</div>
+                  <div class="opt-card-sub" id="voice-isolation-description">Corta voz de fundo (TV, celular, outra pessoa na sala), ventilador e teclado — só a sua voz sai. Nos primeiros segundos ele “aprende” quem está no microfone; depois disso o corte fica forte. Clique pra ligar/desligar.</div>
                 </div>
                 <div class="opt-radio-dot"></div>
               </div>
@@ -2531,6 +2564,22 @@
     // Controlável em Configurações > Voz & Áudio; a preferência fica salva no
     // aparelho e o padrão é LIGADO.
     let micProcessingEnabled = localStorage.getItem('dspeak-voice-isolation') !== 'off';
+    // VoiceLock próprio: os pesos só são habilitados pelo servidor depois de
+    // passarem pelos gates de qualidade. A assinatura vocal vive apenas nesta
+    // página e nunca vai pra rede/localStorage.
+    let voiceLockConfigPromise = null;
+    let voiceLockModulePromise = null;
+    let voiceLockEngine = null;
+    let voiceLockAudioNode = null;
+    let voiceLockHushModulePromise = null;
+    let voiceLockHushProcessor = null;
+    let voiceLockHushNode = null;
+    let voiceLockEnrollmentReady = false;
+    let voiceLockCalibrationPending = false;
+    let voiceLockSkippedThisSession = false;
+    let voiceLockFrameLatencies = [];
+    let voiceLockUnderruns = 0;
+    let voiceLockRuntimeFallbackTriggered = false;
 
     // ---------- Efeitos sonoros da sala (entrar/sair, mutar/desmutar, transmissão) ----------
     // Gerados na hora com osciladores (Web Audio API), sem nenhum arquivo de áudio externo
@@ -4678,14 +4727,16 @@
     // ---------- Item 3: microfone real (voz) ----------
     async function ensureLocalMic() {
       if (localMicStream) return localMicStream;
-      // Item 5: supressão de ruído. O verdadeiro Krisp é um SDK proprietário pago que não dá
-      // pra embutir de graça num app web; usamos aqui o que o navegador tem de mais forte
-      // (echo/noise/AGC nativos) SOMADO a um noise gate próprio (abaixo), que corta o volume
-      // quase todo quando você não está falando — é isso que reduz o ruído de ambiente.
+      const vlConfig = await getVoiceLockConfig();
+      const ownVoiceLockActive = micProcessingEnabled && vlConfig.enabled && !voiceLockSkippedThisSession;
+      // Quando o motor próprio está ativo, não empilhamos o supressor/AGC do
+      // navegador: ele deformaria as características usadas para reconhecer a
+      // pessoa. O cancelamento de eco permanece — é um problema diferente.
       const noiseCleanConstraints = {
         echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true
+        noiseSuppression: !ownVoiceLockActive,
+        autoGainControl: !ownVoiceLockActive,
+        channelCount: 1
       };
       const deviceId = selectedMicId || document.getElementById('select-audio-input').value;
       try {
@@ -4711,8 +4762,440 @@
       }
       localMicStream.getAudioTracks().forEach(t => t.enabled = !isMuted && !isDeafened);
       setupSpeakingDetection(localMicStream, socket.id);
-      setupMicProcessing(localMicStream);
+      await setupMicProcessing(localMicStream);
       return localMicStream;
+    }
+
+    async function getVoiceLockConfig() {
+      if (voiceLockConfigPromise) return voiceLockConfigPromise;
+      voiceLockConfigPromise = fetch('/api/voicelock/config', {
+        credentials: 'same-origin',
+        cache: 'no-store'
+      }).then(r => r.ok ? r.json() : { enabled: false, reason: 'http-' + r.status })
+        .catch(() => ({ enabled: false, reason: 'offline' }))
+        .then(config => {
+          const title = document.getElementById('voice-isolation-title');
+          const description = document.getElementById('voice-isolation-description');
+          if (config.enabled) {
+            if (title) title.textContent = 'VoiceLock — isolar somente minha voz';
+            if (description) description.textContent = 'Aprende sua voz por 4 segundos e corta outras pessoas, TV/celular e ruído. A assinatura fica apenas neste aparelho durante a call.';
+          }
+          return config;
+        });
+      return voiceLockConfigPromise;
+    }
+
+    function voiceLockPlatformName() {
+      const ua = navigator.userAgent || '';
+      if (/Electron/i.test(ua)) return 'electron';
+      if (/Android/i.test(ua) && /wv|WebView/i.test(ua)) return 'android-webview';
+      return 'web';
+    }
+
+    function reportVoiceLockMetric(event, extra = {}) {
+      const payload = {
+        event,
+        platform: voiceLockPlatformName(),
+        backend: (voiceLockEngine && voiceLockEngine.backend) || 'unknown',
+        ...extra
+      };
+      fetch('/api/voicelock/metrics', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        keepalive: true
+      }).catch(() => {});
+    }
+
+    // Consulta em segundo plano apenas pra atualizar o texto da configuração.
+    getVoiceLockConfig();
+
+    const voiceLockWorkletContexts = new WeakSet();
+    let voiceLockCalibrationCancel = null;
+    let voiceLockLastWorkletReport = 0;
+
+    function closeVoiceLockCalibrationModal() {
+      const modal = document.getElementById('voicelock-calibration-modal');
+      const orb = document.getElementById('voicelock-calibration-orb');
+      if (modal) modal.style.display = 'none';
+      if (orb) orb.classList.remove('listening');
+    }
+
+    function collectVoiceLockEnrollment(ctx, sourceNode, seconds) {
+      return new Promise((resolve) => {
+        const modal = document.getElementById('voicelock-calibration-modal');
+        const start = document.getElementById('voicelock-calibration-start');
+        const cancel = document.getElementById('voicelock-calibration-cancel');
+        const progress = document.getElementById('voicelock-calibration-progress');
+        const status = document.getElementById('voicelock-calibration-status');
+        const title = document.getElementById('voicelock-calibration-title');
+        const orb = document.getElementById('voicelock-calibration-orb');
+        if (!modal || !start || !cancel || !progress || !status || !title || !orb) {
+          resolve(null);
+          return;
+        }
+
+        let processor = null;
+        let silentGain = null;
+        let settled = false;
+        let chunks = [];
+        let total = 0;
+        let voiced = 0;
+        const wanted = Math.round(ctx.sampleRate * seconds);
+
+        const stopCapture = () => {
+          if (processor) {
+            processor.onaudioprocess = null;
+            try { sourceNode.disconnect(processor); } catch (_) {}
+            try { processor.disconnect(); } catch (_) {}
+          }
+          if (silentGain) {
+            try { silentGain.disconnect(); } catch (_) {}
+          }
+          processor = null;
+          silentGain = null;
+        };
+
+        const finish = (value) => {
+          if (settled) return;
+          settled = true;
+          stopCapture();
+          voiceLockCalibrationCancel = null;
+          start.onclick = null;
+          cancel.onclick = null;
+          resolve(value);
+        };
+        voiceLockCalibrationCancel = () => finish(null);
+
+        title.textContent = 'Calibrar sua voz';
+        status.textContent = 'Clique em começar e fale normalmente';
+        progress.style.width = '0%';
+        start.disabled = false;
+        cancel.disabled = false;
+        start.textContent = 'Começar calibração';
+        modal.style.display = 'flex';
+
+        cancel.onclick = () => {
+          voiceLockSkippedThisSession = true;
+          closeVoiceLockCalibrationModal();
+          finish(null);
+        };
+
+        start.onclick = async () => {
+          stopCapture();
+          chunks = [];
+          total = 0;
+          voiced = 0;
+          start.disabled = true;
+          cancel.disabled = false;
+          start.textContent = 'Ouvindo...';
+          title.textContent = 'Fale agora';
+          status.textContent = `Precisamos de ${seconds} segundos da sua voz`;
+          progress.style.width = '0%';
+          orb.classList.add('listening');
+          try { await ctx.resume(); } catch (_) {}
+
+          processor = ctx.createScriptProcessor(2048, 1, 1);
+          silentGain = ctx.createGain();
+          silentGain.gain.value = 0;
+          sourceNode.connect(processor);
+          processor.connect(silentGain);
+          silentGain.connect(ctx.destination);
+          processor.onaudioprocess = (event) => {
+            if (settled) return;
+            const input = event.inputBuffer.getChannelData(0);
+            const remaining = wanted - total;
+            const copy = new Float32Array(Math.min(input.length, remaining));
+            copy.set(input.subarray(0, copy.length));
+            chunks.push(copy);
+            total += copy.length;
+
+            let energy = 0;
+            for (let i = 0; i < copy.length; i++) energy += copy[i] * copy[i];
+            const frameRms = Math.sqrt(energy / Math.max(1, copy.length));
+            if (frameRms >= 0.007) voiced += copy.length;
+            progress.style.width = Math.min(100, (total / wanted) * 100) + '%';
+            status.textContent = `Ouvindo sua voz… ${Math.min(seconds, total / ctx.sampleRate).toFixed(1)}s`;
+
+            if (total < wanted) return;
+            stopCapture();
+            orb.classList.remove('listening');
+            const audio = new Float32Array(wanted);
+            let offset = 0;
+            for (const chunk of chunks) {
+              audio.set(chunk, offset);
+              offset += chunk.length;
+            }
+            let allEnergy = 0;
+            for (let i = 0; i < audio.length; i++) allEnergy += audio[i] * audio[i];
+            const rms = Math.sqrt(allEnergy / audio.length);
+            const voicedRatio = voiced / wanted;
+            chunks = [];
+
+            if (rms < 0.004 || voicedRatio < 0.20) {
+              audio.fill(0);
+              title.textContent = 'Não ouvi voz suficiente';
+              status.textContent = 'Aproxime-se do microfone e tente novamente';
+              progress.style.width = '0%';
+              start.disabled = false;
+              start.textContent = 'Tentar novamente';
+              return;
+            }
+            title.textContent = 'Identificando sua voz…';
+            status.textContent = 'Criando assinatura local; ninguém recebe este áudio';
+            finish(audio);
+          };
+        };
+      });
+    }
+
+    async function ensureVoiceLockEngine(config) {
+      if (voiceLockEngine && voiceLockEngine.status === 'ready') return voiceLockEngine;
+      const useWorker = voiceLockPlatformName() !== 'android-webview';
+      if (!voiceLockModulePromise) {
+        voiceLockModulePromise = import(useWorker
+          ? '/audio/voicelock/voicelock-worker-client.js'
+          : '/audio/voicelock/voicelock-engine.js');
+      }
+      const module = await voiceLockModulePromise;
+      const started = performance.now();
+      const Engine = useWorker ? module.VoiceLockWorkerEngine : module.VoiceLockEngine;
+      const engine = new Engine({ manifestUrl: config.manifestUrl });
+      engine.addEventListener('metrics', (event) => {
+        const metric = event.detail || {};
+        if (metric.operation === 'processFrame' && Number.isFinite(metric.totalMs)) {
+          voiceLockFrameLatencies.push(metric.totalMs);
+          if (voiceLockFrameLatencies.length >= 100) {
+            const ordered = [...voiceLockFrameLatencies].sort((a, b) => a - b);
+            const p95 = ordered[Math.min(ordered.length - 1, Math.floor(ordered.length * 0.95))];
+            reportVoiceLockMetric('runtime', { frameP95Ms: p95, underruns: voiceLockUnderruns });
+            voiceLockFrameLatencies = [];
+          }
+        }
+      });
+      engine.addEventListener('error', (event) => {
+        reportVoiceLockMetric('error', { errorCode: event.detail && event.detail.code });
+      });
+      await engine.initialize();
+      voiceLockEngine = engine;
+      reportVoiceLockMetric('initialized', { initMs: performance.now() - started });
+      return engine;
+    }
+
+    async function createVoiceLockAudioNode(ctx, engine) {
+      if (ctx.sampleRate !== 48000) {
+        const error = new Error('VoiceLock exige AudioContext de 48 kHz');
+        error.code = 'UNSUPPORTED_SAMPLE_RATE';
+        throw error;
+      }
+      if (!voiceLockWorkletContexts.has(ctx)) {
+        await ctx.audioWorklet.addModule('/audio/voicelock/voicelock-worklet.js');
+        voiceLockWorkletContexts.add(ctx);
+      }
+      const node = new AudioWorkletNode(ctx, 'voicelock-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+        channelCount: 1,
+        processorOptions: {
+          maxInFlightFrames: 8,
+          frameSamples48k: engine.frameSamples48k
+        }
+      });
+      node.port.onmessage = async ({ data }) => {
+        if (!data || !data.type) return;
+        if (data.type === 'voicelock-input') {
+          try {
+            const output = await engine.processFrame(data.samples);
+            node.port.postMessage({
+              type: 'voicelock-output',
+              sequence: data.sequence,
+              samples: output
+            }, [output.buffer]);
+          } catch (error) {
+            node.port.postMessage({
+              type: 'voicelock-output-error',
+              sequence: data.sequence,
+              code: error && error.code ? error.code : 'PROCESSING_FAILED'
+            });
+          }
+          return;
+        }
+        if (data.type === 'voicelock-worklet-error') {
+          reportVoiceLockMetric('worklet-error', { errorCode: data.code });
+          return;
+        }
+        if (data.type === 'voicelock-worklet-metrics') {
+          voiceLockUnderruns = Number(data.underrunSamples) || 0;
+          if (
+            Number(data.framesSent) > 200 &&
+            (Number(data.framesDropped) > 0 || Number(data.framesFailed) > 0)
+          ) {
+            triggerVoiceLockRuntimeFallback(
+              Number(data.framesDropped) > 0 ? 'FRAMES_DROPPED' : 'FRAMES_FAILED'
+            );
+          }
+          const now = performance.now();
+          if (now - voiceLockLastWorkletReport > 10000) {
+            voiceLockLastWorkletReport = now;
+            reportVoiceLockMetric('worklet', {
+              frameP95Ms: Number(data.maximumRoundTripMs) || 0,
+              underruns: voiceLockUnderruns
+            });
+          }
+        }
+      };
+      voiceLockAudioNode = node;
+      return node;
+    }
+
+    async function createVoiceLockHushNode(ctx, config) {
+      if (!config.postFilterBaseUrl) {
+        const error = new Error('Pós-filtro Hush não foi publicado');
+        error.code = 'HUSH_ASSET_UNAVAILABLE';
+        throw error;
+      }
+      if (!voiceLockHushModulePromise) {
+        voiceLockHushModulePromise = import('/audio/voicelock/vendor/deepfilter-core.js');
+      }
+      const module = await voiceLockHushModulePromise;
+      const started = performance.now();
+      const processor = new module.DeepFilterNet3Core({
+        sampleRate: 48000,
+        noiseReductionLevel: 100,
+        assetConfig: { cdnUrl: config.postFilterBaseUrl }
+      });
+      await processor.initialize();
+      const node = await processor.createAudioWorkletNode(ctx);
+      processor.setSuppressionLevel(100);
+      voiceLockHushProcessor = processor;
+      voiceLockHushNode = node;
+      reportVoiceLockMetric('hush-initialized', { initMs: performance.now() - started });
+      return node;
+    }
+
+    async function benchmarkVoiceLockDevice(engine) {
+      const frame = new Float32Array(engine.frameSamples48k);
+      const times = [];
+      for (let index = 0; index < 35; index++) {
+        const started = performance.now();
+        await engine.processFrame(frame);
+        if (index >= 5) times.push(performance.now() - started);
+      }
+      await engine.reset();
+      const ordered = [...times].sort((a, b) => a - b);
+      const average = times.reduce((sum, value) => sum + value, 0) / times.length;
+      const p95 = ordered[Math.min(ordered.length - 1, Math.floor(ordered.length * 0.95))];
+      const frameDurationMs = engine.frameSamples48k * 1000 / 48000;
+      const realtimeFactor = average / frameDurationMs;
+      reportVoiceLockMetric('preflight', { frameP95Ms: p95 });
+      if (p95 > 5 || realtimeFactor > 0.25) {
+        const error = new Error(
+          `Este aparelho não passou no desempenho do VoiceLock (p95 ${p95.toFixed(1)} ms)`
+        );
+        error.code = 'DEVICE_TOO_SLOW';
+        throw error;
+      }
+      return { average, p95, realtimeFactor };
+    }
+
+    async function ensureOwnVoiceLockNode(ctx, sourceNode) {
+      const config = await getVoiceLockConfig();
+      if (!config.enabled || voiceLockSkippedThisSession) {
+        const error = new Error('VoiceLock próprio não habilitado');
+        error.code = config.reason || 'DISABLED';
+        throw error;
+      }
+
+      voiceLockCalibrationPending = !voiceLockEnrollmentReady;
+      const enginePromise = ensureVoiceLockEngine(config);
+      // Evita aviso de rejeição não tratada enquanto o usuário ainda está gravando.
+      enginePromise.catch(() => {});
+      try {
+        const engine = await enginePromise;
+        if (!voiceLockEnrollmentReady || !engine.isEnrolled) {
+          const enrollment = await collectVoiceLockEnrollment(
+            ctx,
+            sourceNode,
+            Number(config.enrollmentSeconds) || 4
+          );
+          if (!enrollment) {
+            const error = new Error('Calibração cancelada');
+            error.code = 'CALIBRATION_CANCELLED';
+            throw error;
+          }
+          await engine.enroll(enrollment);
+          enrollment.fill(0);
+          voiceLockEnrollmentReady = true;
+          reportVoiceLockMetric('enrolled');
+        } else {
+          await engine.reset();
+        }
+        const status = document.getElementById('voicelock-calibration-status');
+        if (status) status.textContent = 'Verificando desempenho deste aparelho…';
+        await benchmarkVoiceLockDevice(engine);
+        const node = await createVoiceLockAudioNode(ctx, engine);
+        const hushNode = await createVoiceLockHushNode(ctx, config);
+        node.connect(hushNode);
+        voiceLockCalibrationPending = false;
+        closeVoiceLockCalibrationModal();
+        showToast(`VoiceLock + Hush ativos (${engine.backend.toUpperCase()}) — somente sua voz será enviada.`);
+        return { inputNode: node, outputNode: hushNode };
+      } catch (error) {
+        voiceLockCalibrationPending = false;
+        closeVoiceLockCalibrationModal();
+        stopVoiceLockAudioNode();
+        if (error && error.code === 'DEVICE_TOO_SLOW') {
+          voiceLockSkippedThisSession = true;
+          showToast('Este aparelho não sustentou o VoiceLock próprio — usando o isolamento compatível nesta sessão.');
+        }
+        reportVoiceLockMetric('fallback', { errorCode: error && error.code });
+        throw error;
+      }
+    }
+
+    function triggerVoiceLockRuntimeFallback(errorCode) {
+      if (voiceLockRuntimeFallbackTriggered) return;
+      voiceLockRuntimeFallbackTriggered = true;
+      voiceLockSkippedThisSession = true;
+      reportVoiceLockMetric('runtime-fallback', { errorCode });
+      showToast('VoiceLock ficou lento neste aparelho — trocando para o modo compatível sem interromper a call.');
+      if (localMicStream) {
+        setTimeout(() => restartLocalMic().catch(() => {}), 0);
+      }
+    }
+
+    function stopVoiceLockAudioNode() {
+      if (voiceLockAudioNode) {
+        try { voiceLockAudioNode.port.postMessage({ type: 'voicelock-reset' }); } catch (_) {}
+        try { voiceLockAudioNode.disconnect(); } catch (_) {}
+        voiceLockAudioNode.port.onmessage = null;
+        voiceLockAudioNode = null;
+      }
+      if (voiceLockHushNode) {
+        try { voiceLockHushNode.disconnect(); } catch (_) {}
+        voiceLockHushNode = null;
+      }
+      if (voiceLockHushProcessor) {
+        try { voiceLockHushProcessor.destroy(); } catch (_) {}
+        voiceLockHushProcessor = null;
+      }
+    }
+
+    function disposeVoiceLockSession() {
+      if (voiceLockCalibrationCancel) voiceLockCalibrationCancel();
+      closeVoiceLockCalibrationModal();
+      stopVoiceLockAudioNode();
+      const engine = voiceLockEngine;
+      voiceLockEngine = null;
+      if (engine) engine.dispose().catch(() => {});
+      voiceLockEnrollmentReady = false;
+      voiceLockCalibrationPending = false;
+      voiceLockSkippedThisSession = false;
+      voiceLockRuntimeFallbackTriggered = false;
+      voiceLockFrameLatencies = [];
+      voiceLockUnderruns = 0;
     }
 
     // Cria o grafo de áudio que aplica o noise gate: microfone -> ganho controlado -> stream
@@ -4832,10 +5315,15 @@
       return new mod.RnnoiseWorkletNode(ctx, { wasmBinary, maxChannels: 1 });
     }
 
-    function setupMicProcessing(rawStream) {
+    async function setupMicProcessing(rawStream) {
       teardownMicProcessing();
       try {
-        micProcessingCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        try {
+          micProcessingCtx = new AudioCtx({ sampleRate: 48000, latencyHint: 'interactive' });
+        } catch (_) {
+          micProcessingCtx = new AudioCtx();
+        }
         micSourceNode = micProcessingCtx.createMediaStreamSource(rawStream);
         micDestNode = micProcessingCtx.createMediaStreamDestination();
 
@@ -4909,29 +5397,67 @@
 
         const thisCtx = micProcessingCtx; // guarda a referência — se o mic reiniciar de novo antes disso terminar, não mexe no contexto errado
         const attachEnhancer = (enhancerNode, label) => {
+          const enhancerInput = enhancerNode && enhancerNode.inputNode
+            ? enhancerNode.inputNode
+            : enhancerNode;
+          const enhancerOutput = enhancerNode && enhancerNode.outputNode
+            ? enhancerNode.outputNode
+            : enhancerNode;
           if (micProcessingCtx !== thisCtx || thisCtx.state === 'closed') {
-            try { enhancerNode.disconnect(); } catch (e) {}
+            try { enhancerInput.disconnect(); } catch (e) {}
+            try { if (enhancerOutput !== enhancerInput) enhancerOutput.disconnect(); } catch (e) {}
             return;
           }
           micSourceNode.disconnect(micHighPass);
-          micSourceNode.connect(enhancerNode);
-          enhancerNode.connect(micHighPass);
-          gateInputNode = enhancerNode;
+          micSourceNode.connect(enhancerInput);
+          enhancerOutput.connect(micHighPass);
+          gateInputNode = enhancerOutput;
           analyser.disconnect();
           gateInputNode.connect(analyser);
           console.log('[Mic] Isolamento ativo:', label);
         };
 
-        ensureAicVoiceFocusNode(thisCtx).then((aicNode) => {
-          attachEnhancer(aicNode, 'Voice Focus 0.85 (corta voz de fundo)');
-        }).catch((err) => {
-          console.warn('[Mic] Voice Focus indisponível — caindo no RNNoise:', err && err.message);
-          return ensureRnnoiseReady(thisCtx).then((rnnoiseNode) => {
-            attachEnhancer(rnnoiseNode, 'RNNoise (só ruído; Voice Focus falhou)');
-          }).catch((err2) => {
-            console.warn('[Mic] Nem Voice Focus nem RNNoise carregaram — seguindo só com o portão de ruído.', err2);
-          });
-        });
+        let enhancerAttached = false;
+        const vlConfig = await getVoiceLockConfig();
+        if (vlConfig.enabled && !voiceLockSkippedThisSession) {
+          try {
+            const ownNode = await ensureOwnVoiceLockNode(thisCtx, micSourceNode);
+            attachEnhancer(ownNode, `VoiceLock próprio (${voiceLockEngine.backend})`);
+            enhancerAttached = true;
+          } catch (err) {
+            console.warn('[Mic] VoiceLock próprio indisponível — usando o motor de transição:', err && err.message);
+          }
+        }
+        if (
+          !enhancerAttached &&
+          vlConfig.fallbackMode === 'hush' &&
+          vlConfig.postFilterBaseUrl
+        ) {
+          try {
+            const hushOnly = await createVoiceLockHushNode(thisCtx, vlConfig);
+            attachEnhancer(hushOnly, 'Hush (fallback aberto)');
+            enhancerAttached = true;
+          } catch (err) {
+            console.warn('[Mic] Hush fallback indisponível:', err && err.message);
+          }
+        }
+        if (!enhancerAttached) {
+          try {
+            const aicNode = await ensureAicVoiceFocusNode(thisCtx);
+            attachEnhancer(aicNode, 'Voice Focus 0.85 (motor de transição)');
+            enhancerAttached = true;
+          } catch (err) {
+            console.warn('[Mic] Voice Focus indisponível — caindo no RNNoise:', err && err.message);
+          }
+        }
+        if (!enhancerAttached) {
+          try {
+            const rnnoiseNode = await ensureRnnoiseReady(thisCtx);
+            attachEnhancer(rnnoiseNode, 'RNNoise (fallback temporário)');
+          } catch (err) {
+            console.warn('[Mic] Nenhum motor neural carregou — seguindo só com o portão de ruído.', err);
+          }
+        }
 
         // Foca a leitura de volume só na faixa de frequência da VOZ humana (~200Hz a
         // ~3500Hz) — som de tecla batendo é um estalo mais agudo/seco, com bastante
@@ -4951,7 +5477,10 @@
         // Precisa ficar acima do limite por esse tempo SEGUIDO antes de abrir de vez —
         // uma batida de tecla é rápida demais (poucos ms) pra se sustentar por isso;
         // voz de verdade começando já se sustenta naturalmente.
-        const ATTACK_MS = 120;
+        // O motor próprio já remove interferência e teclado; não precisa esperar
+        // 120 ms para distinguir um estalo. Abrir em 20 ms preserva o começo das
+        // palavras e mantém a latência total dentro do gate de 60 ms.
+        const ATTACK_MS = voiceLockEnrollmentReady ? 20 : 120;
         // ZERO de verdade: com 0.05 (5%) ainda vazava fundo — e pior, o compressor
         // mais adiante na cadeia "nivelava" esse resto pra cima, então quem ouvia
         // pegava ventilador/ambiente mesmo com o portão fechado. Abaixo da linha
@@ -5023,6 +5552,7 @@
     function teardownMicProcessing() {
       if (noiseGateRafId) cancelAnimationFrame(noiseGateRafId);
       noiseGateRafId = null;
+      stopVoiceLockAudioNode();
       stopAicProcessor();
       if (micProcessingCtx) micProcessingCtx.close().catch(() => {});
       micProcessingCtx = null;
@@ -5033,8 +5563,9 @@
     }
 
     // Retorna o stream que de fato deve ser enviado pros outros: o processado (com noise
-    // gate), se já estiver pronto; senão cai de volta pro stream cru do microfone.
+    // gate). Com isolamento ligado, falha FECHADA: nunca devolve o microfone cru.
     function getOutgoingMicStream() {
+      if (micProcessingEnabled) return (micDestNode && micDestNode.stream) || null;
       return (micDestNode && micDestNode.stream) || localMicStream;
     }
 
@@ -5066,16 +5597,21 @@
       if (card) card.classList.toggle('selected', micProcessingEnabled);
     }
 
-    function toggleVoiceIsolation() {
+    async function toggleVoiceIsolation() {
       micProcessingEnabled = !micProcessingEnabled;
       localStorage.setItem('dspeak-voice-isolation', micProcessingEnabled ? 'on' : 'off');
+      if (!micProcessingEnabled) disposeVoiceLockSession();
+      else voiceLockSkippedThisSession = false;
       updateVoiceIsolationCard();
       // Se já estivermos numa chamada, reinicia o microfone na hora — restartLocalMic
       // remonta o processamento e troca a faixa enviada pra cada pessoa (replaceTrack),
       // então a mudança vale imediatamente, sem sair e voltar da sala.
-      if (localMicStream) restartLocalMic();
+      if (localMicStream) await restartLocalMic();
+      const config = await getVoiceLockConfig();
       showToast(micProcessingEnabled
-        ? 'Isolamento de voz LIGADO — Voice Focus corta voz de fundo e ruído (nos primeiros segundos ele aprende a sua voz).'
+        ? (config.enabled
+            ? 'VoiceLock ligado — calibre sua voz para cortar outras pessoas e ruídos.'
+            : 'Isolamento ligado — usando o motor de transição até os pesos VoiceLock serem aprovados.')
         : 'Isolamento de voz desligado — áudio do microfone saindo sem tratamento extra.');
     }
     updateVoiceIsolationCard();
@@ -5834,6 +6370,7 @@
 
       if (localMicStream) { localMicStream.getTracks().forEach(t => t.stop()); localMicStream = null; }
       teardownMicProcessing();
+      disposeVoiceLockSession();
       stopSpeakingDetection(socket.id);
       Object.keys(peerConnections).forEach(id => { peerConnections[id].close(); delete peerConnections[id]; });
       Object.keys(peerAudioEls).forEach(removeRemoteMicAudio);

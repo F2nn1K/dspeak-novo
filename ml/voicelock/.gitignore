@@ -1,0 +1,24 @@
+# Ambientes e caches
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Dados, manifests locais e artefatos de treino
+data/
+manifests/
+artifacts/
+exports/
+runs/
+
+# Nunca versionar pesos ou modelos gerados
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# Logs e temporários
+*.log
+*.tmp

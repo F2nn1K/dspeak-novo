@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dspeak-voicelock"
+version = "0.1.0"
+description = "Pipeline próprio de Target Speaker Extraction causal"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "numpy>=1.26,<3",
+  "soundfile>=0.12,<1",
+  "torch>=2.5,<3",
+]
+
+[project.optional-dependencies]
+export = [
+  "onnx>=1.16,<2",
+  "onnxruntime>=1.19,<2",
+]
+evaluation = [
+  "pystoi>=0.4,<1",
+]
+
+[project.scripts]
+voicelock-build-manifest = "voicelock.manifest:build_cli"
+voicelock-validate-manifest = "voicelock.manifest:validate_cli"
+
+[tool.setuptools.packages.find]
+include = ["voicelock*"]

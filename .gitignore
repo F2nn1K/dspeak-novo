@@ -20,6 +20,15 @@ downloads/
 .env.*
 key.txt
 aic-cache/
+voicelock-models/
+
+# Experimentos locais de IA
+experiments/**/.venv/
+experiments/**/models/
+experiments/**/output/
+experiments/**/__pycache__/
+experiments/**/vendor/
+experiments/**/*.zip
 
 # Sistema operacional
 Thumbs.db

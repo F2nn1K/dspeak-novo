@@ -1,0 +1,27 @@
+{
+  "approvedBy": "",
+  "quality": {
+    "siSdrImprovementDb": 0,
+    "targetStoi": 0,
+    "speakerSwitches": 999
+  },
+  "runtime": {
+    "frameP95Ms": 999,
+    "latencyP95Ms": 999,
+    "realtimeFactor": 999
+  },
+  "platforms": {
+    "windows-amd": false,
+    "windows-intel": false,
+    "windows-nvidia": false,
+    "chrome": false,
+    "edge": false,
+    "firefox": false,
+    "android-entry": false,
+    "android-mid": false
+  },
+  "legal": {
+    "datasetsApproved": false,
+    "weightsOwned": false
+  }
+}
