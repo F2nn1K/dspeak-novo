@@ -611,6 +611,9 @@
     .screen-stream-card.fullscreen-stage {
       position: absolute !important; inset: 0 !important; width: 100% !important; height: 100% !important; max-height: 100% !important; z-index: 200; border-radius: 0; border: none; background: #000;
     }
+    /* Tela cheia nativa (Fullscreen API): o card vira a tela inteira do monitor */
+    .screen-stream-card:fullscreen { border-radius: 0; border: none; background: #000; max-height: none; }
+    .screen-stream-card:fullscreen video { width: 100%; height: 100%; }
     .screen-stream-card video { width: 100%; height: 100%; object-fit: contain; }
     .screen-user-badge { position: absolute; top: 12px; left: 12px; background: rgba(12, 13, 16, 0.85); backdrop-filter: blur(8px); padding: 5px 12px; border-radius: 8px; font-size: 12px; font-weight: bold; color: #fff; border: 1px solid rgba(255, 85, 0, 0.3); }
     .stream-volume-control,
@@ -9032,20 +9035,35 @@
 
         const fsBtn = document.createElement('button');
         fsBtn.className = 'stream-fullscreen-btn';
-        fsBtn.title = 'Expandir no Palco';
+        fsBtn.title = 'Tela Cheia';
         fsBtn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>`;
         
+        // Tela cheia DE VERDADE (Fullscreen API): ocupa o monitor inteiro, e não
+        // só o palco da sala. Se a API falhar por algum motivo, cai no modo
+        // antigo de "expandir no palco" como plano B.
+        const fsExpandIcon = `<svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>`;
+        const fsRestoreIcon = `<svg viewBox="0 0 24 24"><path d="M4 14h6v6m10-10h-6V4m0 6l7-7M4 20l7-7"/></svg>`;
         fsBtn.onclick = (e) => {
           e.stopPropagation();
-          card.classList.toggle('fullscreen-stage');
-          if (card.classList.contains('fullscreen-stage')) {
-            fsBtn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M4 14h6v6m10-10h-6V4m0 6l7-7M4 20l7-7"/></svg>`;
-            fsBtn.title = 'Restaurar Tamanho';
+          if (document.fullscreenElement === card) {
+            document.exitFullscreen().catch(() => {});
+          } else if (card.requestFullscreen) {
+            card.requestFullscreen().catch(() => {
+              card.classList.toggle('fullscreen-stage');
+            });
           } else {
-            fsBtn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>`;
-            fsBtn.title = 'Expandir no Palco';
+            card.classList.toggle('fullscreen-stage');
           }
         };
+        // O navegador também sai do fullscreen com ESC, então o ícone é
+        // atualizado aqui (e não no clique) pra nunca ficar dessincronizado.
+        card.addEventListener('fullscreenchange', () => {
+          const inFs = document.fullscreenElement === card;
+          fsBtn.innerHTML = inFs ? fsRestoreIcon : fsExpandIcon;
+          fsBtn.title = inFs ? 'Sair da Tela Cheia (ESC)' : 'Tela Cheia';
+        });
+        // Duplo clique no vídeo também alterna a tela cheia (padrão de players).
+        card.addEventListener('dblclick', () => fsBtn.onclick(new Event('dblclick')));
 
         card.appendChild(video);
         card.appendChild(badge);
