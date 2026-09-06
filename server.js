@@ -9,6 +9,7 @@ const db = require('./db');
 const mail = require('./mail');
 const sfu = require('./sfu');
 const aic = require('./aic');
+const koala = require('./koala');
 
 const app = express();
 const server = http.createServer(app);
@@ -189,6 +190,7 @@ app.get('/turn-credentials', async (req, res) => {
 const ADMIN_KEY = process.env.ADMIN_KEY || '';
 
 aic.mount(app);
+koala.mount(app);
 
 app.get('/client-version', (req, res) => {
   fs.stat(path.join(__dirname, 'public', 'index.html'), (err, st) => {

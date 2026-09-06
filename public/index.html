@@ -5792,6 +5792,171 @@
       return new mod.RnnoiseWorkletNode(ctx, { wasmBinary, maxChannels: 1 });
     }
 
+    // ---------- Supressor Picovoice Koala (2º da fila: Voice Focus → Koala → RNNoise) ----------
+    // Supressor de ruído neural que roda 100% no navegador. A AccessKey vem do
+    // servidor (/api/koala/key) e o modelo (~4 MB) também é servido por nós.
+    // O Koala trabalha em 16 kHz com frames de tamanho fixo, então este nó faz a
+    // reamostragem (48 kHz ↔ 16 kHz) e o enfileiramento dos frames na mão.
+    let koalaSdkPromise = null;
+    let koalaInstance = null;
+    let koalaScriptNode = null;
+
+    function loadKoalaSdk() {
+      if (koalaSdkPromise) return koalaSdkPromise;
+      koalaSdkPromise = new Promise((resolve, reject) => {
+        if (window.KoalaWeb) return resolve(window.KoalaWeb);
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/@picovoice/koala-web@3.0.0/dist/iife/index.js';
+        s.onload = () => window.KoalaWeb ? resolve(window.KoalaWeb) : reject(new Error('koala-sdk-vazio'));
+        s.onerror = () => reject(new Error('koala-sdk-cdn'));
+        document.head.appendChild(s);
+      });
+      koalaSdkPromise.catch(() => { koalaSdkPromise = null; });
+      return koalaSdkPromise;
+    }
+
+    async function fetchKoalaKey() {
+      const r = await fetch('/api/koala/key', { credentials: 'same-origin' });
+      const j = await r.json();
+      if (!j || !j.ok || !j.accessKey) throw new Error((j && j.error) || 'sem-chave');
+      return j.accessKey;
+    }
+
+    function stopKoalaProcessor() {
+      if (koalaScriptNode) {
+        try { koalaScriptNode.disconnect(); } catch (e) {}
+        koalaScriptNode.onaudioprocess = null;
+        koalaScriptNode = null;
+      }
+      if (koalaInstance) {
+        const inst = koalaInstance;
+        koalaInstance = null;
+        try { (inst.terminate ? inst.terminate() : inst.release()); } catch (e) {}
+      }
+    }
+
+    async function ensureKoalaNode(ctx) {
+      stopKoalaProcessor();
+      const KW = await loadKoalaSdk();
+      const accessKey = await fetchKoalaKey();
+
+      const KOALA_RATE = 16000;
+      // Fila dos frames já limpos que o worker devolve (domínio 16 kHz, Int16).
+      const outChunks = [];
+      let outAvail = 0;
+      let koalaBroken = false;
+      const processCallback = (enhancedPcm) => {
+        outChunks.push(enhancedPcm);
+        outAvail += enhancedPcm.length;
+      };
+      const processErrorCallback = (err) => {
+        koalaBroken = true; // o nó vira passagem direta; o áudio nunca morre
+        console.warn('[Mic] Koala falhou em tempo real — passando áudio cru:', err && err.message);
+      };
+
+      const model = { publicPath: '/koala/model.pv', customWritePath: 'koala_params_v3.pv' };
+      let inst;
+      try {
+        inst = await KW.KoalaWorker.create(accessKey, processCallback, model, { processErrorCallback });
+      } catch (e) {
+        // Sem worker (ex.: aba anônima do Firefox, sem IndexedDB) — tenta na thread principal.
+        inst = await KW.Koala.create(accessKey, processCallback, model, { processErrorCallback });
+      }
+      await inst.reset();
+      const frameLen = inst.frameLength || 256;
+      // Quanto de áudio limpo precisa acumular antes de trocar da passagem direta
+      // pro áudio processado (o modelo tem um atraso interno de delaySample).
+      const primeTarget = (Number(inst.delaySample) || 0) + frameLen * 2;
+
+      const blockSize = 512;
+      const sp = ctx.createScriptProcessor(blockSize, 1, 1);
+      const downRatio = ctx.sampleRate / KOALA_RATE; // 48000 → 3.0
+      const upRatio = KOALA_RATE / ctx.sampleRate;
+
+      // FIFO de entrada (taxa do contexto) + posição fracionária da reamostragem.
+      let inFifo = new Float32Array(0);
+      let dsPos = 0;
+      const frameBuf = new Int16Array(frameLen);
+      let frameFill = 0;
+
+      // FIFO de saída (16 kHz) + posição fracionária da subida de taxa.
+      let usPos = 0;
+      let primed = false;
+
+      const popOutSample = (idx) => {
+        // idx é absoluto na fila concatenada; chunks consumidos são descartados fora.
+        let i = idx;
+        for (let c = 0; c < outChunks.length; c++) {
+          if (i < outChunks[c].length) return outChunks[c][i] / 32768;
+          i -= outChunks[c].length;
+        }
+        return 0;
+      };
+
+      sp.onaudioprocess = (e) => {
+        const input = e.inputBuffer.getChannelData(0);
+        const output = e.outputBuffer.getChannelData(0);
+
+        if (koalaBroken || !koalaInstance) {
+          output.set(input);
+          return;
+        }
+
+        // 1) Acumula a entrada e desce pra 16 kHz, empacotando frames pro Koala.
+        const merged = new Float32Array(inFifo.length + input.length);
+        merged.set(inFifo);
+        merged.set(input, inFifo.length);
+        inFifo = merged;
+        while (dsPos + 1 < inFifo.length) {
+          const i0 = Math.floor(dsPos);
+          const frac = dsPos - i0;
+          const s = inFifo[i0] * (1 - frac) + inFifo[i0 + 1] * frac;
+          frameBuf[frameFill++] = Math.max(-32768, Math.min(32767, Math.round(s * 32768)));
+          if (frameFill === frameLen) {
+            koalaInstance.process(new Int16Array(frameBuf)).catch(() => { koalaBroken = true; });
+            frameFill = 0;
+          }
+          dsPos += downRatio;
+        }
+        const consumed = Math.floor(dsPos);
+        if (consumed > 0) {
+          inFifo = inFifo.slice(consumed);
+          dsPos -= consumed;
+        }
+
+        // 2) Sobe o áudio limpo de volta pra taxa do contexto.
+        if (!primed) {
+          if (outAvail >= primeTarget) { primed = true; }
+          else { output.set(input); return; } // aquecendo: passa o cru pra voz nunca sumir
+        }
+        const needed = Math.ceil(usPos + output.length * upRatio) + 1;
+        if (outAvail < needed) {
+          // Faltou frame (CPU ocupada): solta o cru neste bloco e volta a acumular.
+          primed = false;
+          output.set(input);
+          return;
+        }
+        for (let i = 0; i < output.length; i++) {
+          const i0 = Math.floor(usPos);
+          const frac = usPos - i0;
+          output[i] = popOutSample(i0) * (1 - frac) + popOutSample(i0 + 1) * frac;
+          usPos += upRatio;
+        }
+        // Descarta os chunks já consumidos por inteiro.
+        let drop = Math.floor(usPos);
+        while (outChunks.length && drop >= outChunks[0].length) {
+          drop -= outChunks[0].length;
+          outAvail -= outChunks[0].length;
+          outChunks.shift();
+        }
+        usPos = drop + (usPos - Math.floor(usPos));
+      };
+
+      koalaInstance = inst;
+      koalaScriptNode = sp;
+      return sp;
+    }
+
     function setupMicProcessing(rawStream) {
       teardownMicProcessing();
       try {
@@ -5912,11 +6077,16 @@
         ensureAicVoiceFocusNode(thisCtx).then((aicNode) => {
           attachEnhancer(aicNode, 'Voice Focus L auto ' + aicLiveLevel);
         }).catch((err) => {
-          console.warn('[Mic] Voice Focus indisponível — caindo no RNNoise (só ruído):', err && err.message);
-          return ensureRnnoiseReady(thisCtx).then((rnnoiseNode) => {
-            attachEnhancer(rnnoiseNode, 'RNNoise (só ruído; Voice Focus falhou)');
-          }).catch((err2) => {
-            console.warn('[Mic] Nem Voice Focus nem RNNoise carregaram — seguindo só com o portão de ruído.', err2);
+          console.warn('[Mic] Voice Focus indisponível — tentando o Koala (Picovoice):', err && err.message);
+          return ensureKoalaNode(thisCtx).then((koalaNode) => {
+            attachEnhancer(koalaNode, 'Koala (Picovoice, só ruído)');
+          }).catch((errK) => {
+            console.warn('[Mic] Koala indisponível — caindo no RNNoise (só ruído):', errK && errK.message);
+            return ensureRnnoiseReady(thisCtx).then((rnnoiseNode) => {
+              attachEnhancer(rnnoiseNode, 'RNNoise (só ruído; Voice Focus e Koala falharam)');
+            }).catch((err2) => {
+              console.warn('[Mic] Nenhum supressor carregou — seguindo só com o portão de ruído.', err2);
+            });
           });
         });
 
@@ -6062,6 +6232,7 @@
         aicVisHandler = null;
       }
       stopAicProcessor();
+      stopKoalaProcessor();
       if (micProcessingCtx) micProcessingCtx.close().catch(() => {});
       micProcessingCtx = null;
       micSourceNode = null;
