@@ -10,6 +10,10 @@ const TOKEN_URL = 'https://api.ai-coustics.io/v1/sdk/tokens';
 // teste honesto de “cortar interferente” sem trocar de vendor.
 const MODEL_URL = 'https://artifacts.ai-coustics.io/models/quail-vf-2-2-l-16khz/v7/quail_vf_2_2_l_16khz_horgwub0_v14.aicmodel';
 const MODEL_CACHE = path.join(__dirname, 'aic-cache', 'quail-vf-2-2-l-16khz.aicmodel');
+// Modelo S (leve): usado como degrau automático quando o L picota em PC fraco —
+// processar em tempo real na thread de áudio pesa, e o L não roda em qualquer máquina.
+const MODEL_URL_S = 'https://artifacts.ai-coustics.io/models/quail-vf-2-2-s-16khz/v6/quail_vf_2_2_s_16khz_gf70x7zf_v14.aicmodel';
+const MODEL_CACHE_S = path.join(__dirname, 'aic-cache', 'quail-vf-2-2-s-16khz.aicmodel');
 
 function readLicense() {
   if (process.env.AIC_SDK_LICENSE && process.env.AIC_SDK_LICENSE.trim()) {
@@ -92,6 +96,7 @@ function httpsDownload(url, destFile) {
 
 let cachedApiKey = null;
 let modelReady = null;
+let modelReadyS = null;
 const tokenHits = new Map(); // ip -> [timestamps]
 
 function apiKey() {
@@ -143,6 +148,20 @@ async function ensureModelFile() {
   return modelReady;
 }
 
+async function ensureModelFileS() {
+  if (modelReadyS) return modelReadyS;
+  modelReadyS = (async () => {
+    try {
+      const st = fs.statSync(MODEL_CACHE_S);
+      if (st.size > 100000) return MODEL_CACHE_S;
+    } catch (e) { /* baixa abaixo */ }
+    console.log('[ai-coustics] Baixando modelo Voice Focus S (uma vez, ~5 MB)...');
+    await httpsDownload(MODEL_URL_S, MODEL_CACHE_S);
+    return MODEL_CACHE_S;
+  })();
+  return modelReadyS;
+}
+
 function requestIp(req) {
   return String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
 }
@@ -169,6 +188,17 @@ function mount(app) {
     }
   });
 
+  app.get('/aic/model-s.aicmodel', async (req, res) => {
+    try {
+      const file = await ensureModelFileS();
+      res.type('application/octet-stream');
+      res.sendFile(file);
+    } catch (e) {
+      console.error('[ai-coustics] modelo S:', e.message);
+      res.status(503).json({ error: 'model-unavailable' });
+    }
+  });
+
   app.get('/api/aic/token', async (req, res) => {
     const ip = requestIp(req);
     if (!allowToken(ip)) return res.status(429).json({ ok: false, error: 'rate-limit' });
@@ -188,6 +218,7 @@ function mount(app) {
     apiKey();
     console.log('[ai-coustics] Voice Focus configurado — JWT será emitido para o cliente.');
     ensureModelFile().catch((e) => console.warn('[ai-coustics] modelo ainda não baixado:', e.message));
+    ensureModelFileS().catch((e) => console.warn('[ai-coustics] modelo S ainda não baixado:', e.message));
   } catch (e) {
     console.warn('[ai-coustics] Sem AIC_SDK_LICENSE / key.txt — isolamento cai no RNNoise.');
   }

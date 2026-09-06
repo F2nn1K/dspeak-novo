@@ -5621,7 +5621,12 @@
     const AIC_BLOCK_SIZE = 512;
     let rnnoiseWasmBinaryPromise = null;
     let rnnoiseWorkletRegisteredCtx = null;
-    let aicWasmPromise = null;
+    let aicModPromise = null;
+    const aicModelPromises = {}; // 'l' | 's' -> Promise<Model>
+    // Qual modelo usar: L (padrão, mais forte) ou S (leve). Quando o L picota na
+    // máquina da pessoa, o app desce pro S sozinho e memoriza no aparelho.
+    let aicModelVariant = localStorage.getItem('dspeak-aic-model') === 's' ? 's' : 'l';
+    let aicBadCycles = 0;
     let aicProcessor = null;
     let aicProcCtx = null;
     let aicEnhancementParam = null;
@@ -5693,18 +5698,29 @@
       return j.token;
     }
 
-    async function ensureAicWasm() {
-      if (aicWasmPromise) return aicWasmPromise;
-      aicWasmPromise = (async () => {
-        const mod = await import('/vendor/aic-sdk-wasm/aic_sdk_wasm.js');
-        await mod.default();
-        const modelResp = await fetch('/aic/model.aicmodel');
-        if (!modelResp.ok) throw new Error('modelo-indisponivel');
-        const bytes = new Uint8Array(await modelResp.arrayBuffer());
-        const model = mod.Model.fromBytes(bytes);
-        return { mod, model };
-      })();
-      return aicWasmPromise;
+    async function ensureAicWasm(variant) {
+      if (!aicModPromise) {
+        aicModPromise = (async () => {
+          const mod = await import('/vendor/aic-sdk-wasm/aic_sdk_wasm.js');
+          await mod.default();
+          return mod;
+        })();
+        aicModPromise.catch(() => { aicModPromise = null; });
+      }
+      const mod = await aicModPromise;
+      const v = variant === 's' ? 's' : 'l';
+      if (!aicModelPromises[v]) {
+        aicModelPromises[v] = (async () => {
+          const url = v === 's' ? '/aic/model-s.aicmodel' : '/aic/model.aicmodel';
+          const modelResp = await fetch(url);
+          if (!modelResp.ok) throw new Error('modelo-indisponivel');
+          const bytes = new Uint8Array(await modelResp.arrayBuffer());
+          return mod.Model.fromBytes(bytes);
+        })();
+        aicModelPromises[v].catch(() => { delete aicModelPromises[v]; });
+      }
+      const model = await aicModelPromises[v];
+      return { mod, model };
     }
 
     function stopAicProcessor() {
@@ -5725,7 +5741,7 @@
 
     async function ensureAicVoiceFocusNode(ctx) {
       stopAicProcessor();
-      const { mod, model } = await ensureAicWasm();
+      const { mod, model } = await ensureAicWasm(aicModelVariant);
       const token = await fetchAicToken();
       const processor = new mod.Processor(model, token);
       const blockSize = AIC_BLOCK_SIZE;
@@ -5882,6 +5898,7 @@
       // FIFO de saída (16 kHz) + posição fracionária da subida de taxa.
       let usPos = 0;
       let primed = false;
+      let unprimedAt = 0; // histerese: não alterna cru/limpo a cada bloco (soa robótico)
 
       const popOutSample = (idx) => {
         // idx é absoluto na fila concatenada; chunks consumidos são descartados fora.
@@ -5926,13 +5943,27 @@
 
         // 2) Sobe o áudio limpo de volta pra taxa do contexto.
         if (!primed) {
-          if (outAvail >= primeTarget) { primed = true; }
-          else { output.set(input); return; } // aquecendo: passa o cru pra voz nunca sumir
+          // Só volta pro áudio limpo com fila cheia E depois de um respiro de 700ms —
+          // alternar cru/limpo a cada bloco é o que deixa a voz "robótica".
+          if (outAvail >= primeTarget && performance.now() - unprimedAt > 700) {
+            // Descarta o atraso acumulado enquanto passava o cru: senão a voz
+            // limpa voltaria segundos atrás de onde a pessoa está falando.
+            while (outAvail - (outChunks.length ? outChunks[0].length : 0) >= primeTarget && outChunks.length > 1) {
+              outAvail -= outChunks[0].length;
+              outChunks.shift();
+            }
+            usPos = 0;
+            primed = true;
+          } else {
+            output.set(input); // aquecendo: passa o cru pra voz nunca sumir
+            return;
+          }
         }
         const needed = Math.ceil(usPos + output.length * upRatio) + 1;
         if (outAvail < needed) {
-          // Faltou frame (CPU ocupada): solta o cru neste bloco e volta a acumular.
+          // Faltou frame (CPU ocupada): solta o cru e espera a fila re-encher.
           primed = false;
+          unprimedAt = performance.now();
           output.set(input);
           return;
         }
@@ -6060,14 +6091,23 @@
         const rawData = new Uint8Array(rawAnalyser.frequencyBinCount);
 
         const thisCtx = micProcessingCtx; // guarda a referência — se o mic reiniciar de novo antes disso terminar, não mexe no contexto errado
+        let currentEnhancerNode = null;
         const attachEnhancer = (enhancerNode, label) => {
           if (micProcessingCtx !== thisCtx || thisCtx.state === 'closed') {
             try { enhancerNode.disconnect(); } catch (e) {}
             return;
           }
-          micSourceNode.disconnect(micHighPass);
+          // Pode ser uma TROCA de motor no meio da call (ex.: modelo L picotando →
+          // desce pro S): desliga o antigo antes de plugar o novo no mesmo lugar.
+          if (currentEnhancerNode) {
+            try { micSourceNode.disconnect(currentEnhancerNode); } catch (e) {}
+            try { currentEnhancerNode.disconnect(); } catch (e) {}
+          } else {
+            try { micSourceNode.disconnect(micHighPass); } catch (e) {}
+          }
           micSourceNode.connect(enhancerNode);
           enhancerNode.connect(micHighPass);
+          currentEnhancerNode = enhancerNode;
           gateInputNode = enhancerNode;
           analyser.disconnect();
           gateInputNode.connect(analyser);
@@ -6075,7 +6115,7 @@
         };
 
         ensureAicVoiceFocusNode(thisCtx).then((aicNode) => {
-          attachEnhancer(aicNode, 'Voice Focus L auto ' + aicLiveLevel);
+          attachEnhancer(aicNode, 'Voice Focus ' + aicModelVariant.toUpperCase() + ' auto ' + aicLiveLevel);
         }).catch((err) => {
           console.warn('[Mic] Voice Focus indisponível — tentando o Koala (Picovoice):', err && err.message);
           return ensureKoalaNode(thisCtx).then((koalaNode) => {
@@ -6211,10 +6251,30 @@
             return;
           }
           if (underruns >= 2 || chops >= 8) {
+            aicBadCycles++;
+            // Baixar o nível não está resolvendo: o problema é o MODELO L pesado
+            // demais pra esta máquina (voz sai robótica/picotada pros outros).
+            // Desce pro modelo S (leve) uma vez só e memoriza no aparelho —
+            // na próxima call a pessoa já entra direto no S, sem picotar.
+            if (aicBadCycles >= 3 && aicModelVariant === 'l' && aicProcessor) {
+              aicModelVariant = 's';
+              aicBadCycles = 0;
+              try { localStorage.setItem('dspeak-aic-model', 's'); } catch (e) {}
+              console.warn('[Mic] Voice Focus L pesado nesta máquina — trocando pro modelo S (leve).');
+              ensureAicVoiceFocusNode(thisCtx).then((n) => {
+                attachEnhancer(n, 'Voice Focus S (leve, anti-picote)');
+              }).catch((e) => {
+                console.warn('[Mic] Falha ao trocar pro modelo S — tentando o Koala:', e && e.message);
+                return ensureKoalaNode(thisCtx).then((k) => attachEnhancer(k, 'Koala (Picovoice, só ruído)')).catch(() => {});
+              });
+              aicStableSince = performance.now();
+              return;
+            }
             applyAicLiveLevel(aicLiveLevel - 0.05, underruns >= 2 ? 'atraso-cpu' : 'picote');
             aicStableSince = performance.now();
             return;
           }
+          aicBadCycles = 0;
           if (performance.now() - aicStableSince > 90000 && aicLiveLevel < aicLevelCap()) {
             applyAicLiveLevel(aicLiveLevel + 0.05, 'estavel');
             aicStableSince = performance.now();
