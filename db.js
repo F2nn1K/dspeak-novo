@@ -55,6 +55,9 @@ async function init() {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_hash TEXT;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_expires BIGINT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS username_changes INTEGER DEFAULT 0;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS username_claimed BOOLEAN DEFAULT FALSE;
     CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique
       ON users (email) WHERE email IS NOT NULL AND email <> '';
     CREATE TABLE IF NOT EXISTS chat_files (
@@ -118,7 +121,7 @@ async function loadSnapshot() {
     getKv('roles'),
     getKv('messages'),
     getKv('dms'),
-    query('SELECT username_key, username, password_hash, recovery_hash, avatar_url, session_token, created_at, email, password_reset_hash, password_reset_expires FROM users')
+    query('SELECT username_key, username, password_hash, recovery_hash, avatar_url, session_token, created_at, email, password_reset_hash, password_reset_expires, display_name, username_changes, username_claimed FROM users')
   ]);
   return {
     channels: Array.isArray(channels) ? channels : null,
@@ -133,8 +136,8 @@ async function loadSnapshot() {
 async function upsertUser(user) {
   if (!enabled) return;
   await query(
-    `INSERT INTO users (username_key, username, password_hash, recovery_hash, avatar_url, session_token, created_at, email, password_reset_hash, password_reset_expires)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    `INSERT INTO users (username_key, username, password_hash, recovery_hash, avatar_url, session_token, created_at, email, password_reset_hash, password_reset_expires, display_name, username_changes, username_claimed)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
      ON CONFLICT (username_key) DO UPDATE SET
        username = EXCLUDED.username,
        password_hash = EXCLUDED.password_hash,
@@ -143,7 +146,10 @@ async function upsertUser(user) {
        session_token = EXCLUDED.session_token,
        email = EXCLUDED.email,
        password_reset_hash = EXCLUDED.password_reset_hash,
-       password_reset_expires = EXCLUDED.password_reset_expires`,
+       password_reset_expires = EXCLUDED.password_reset_expires,
+       display_name = EXCLUDED.display_name,
+       username_changes = EXCLUDED.username_changes,
+       username_claimed = EXCLUDED.username_claimed`,
     [
       user.usernameKey,
       user.username,
@@ -154,9 +160,17 @@ async function upsertUser(user) {
       user.createdAt || Date.now(),
       user.email || null,
       user.passwordResetHash || null,
-      user.passwordResetExpires || null
+      user.passwordResetExpires || null,
+      user.displayName || null,
+      Number(user.usernameChanges) || 0,
+      !!user.usernameClaimed
     ]
   );
+}
+
+async function deleteUser(usernameKey) {
+  if (!enabled) return;
+  await query('DELETE FROM users WHERE username_key = $1', [usernameKey]);
 }
 
 async function updateUserAvatar(usernameKey, avatarUrl) {
@@ -193,6 +207,7 @@ module.exports = {
   saveKvDebounced,
   flushAll,
   upsertUser,
+  deleteUser,
   updateUserAvatar,
   updateUserToken,
   saveChatFile,

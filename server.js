@@ -392,6 +392,14 @@ app.get('/files/:id', async (req, res) => {
 const voiceUsers = {};
 const activeRoomStreams = {};
 
+function markVoiceUserStreaming(socketId, streaming) {
+  Object.keys(voiceUsers).forEach(channelId => {
+    voiceUsers[channelId] = (voiceUsers[channelId] || []).map(u =>
+      u.socketId === socketId ? { ...u, streaming: !!streaming } : u
+    );
+  });
+}
+
 // ---------- Reuniões instantâneas (estilo Meet) ----------
 // Qualquer pessoa cria um link /m/abc-defg-hij e manda pra quem quiser: quem
 // abre só digita um NOME (sem conta, sem servidor) e cai na sala com voz, tela,
@@ -501,6 +509,61 @@ const VALID_STATUSES = ['online', 'idle', 'dnd'];
 
 function broadcastStatuses() {
   io.emit('user-statuses', userStatuses);
+}
+
+function onlineUsernameKeys() {
+  const keys = new Set();
+  for (const [, s] of io.sockets.sockets) {
+    if (s.usernameKey && !s.isGuest) keys.add(s.usernameKey);
+  }
+  return [...keys];
+}
+function broadcastOnlineUsers() {
+  io.emit('users-online', onlineUsernameKeys());
+}
+
+function staffRoleForMember(srv, key) {
+  if (srv.id === 'dspeak' && roles[key] === 'owner') return 'owner';
+  if (srv.ownerUsername === key) return 'owner';
+  if ((srv.moderators || []).includes(key)) return 'moderator';
+  return 'member';
+}
+
+function serverRoster(srv) {
+  ensureServerRoleModel(srv);
+  const keys = new Set();
+  if (srv.ownerUsername) keys.add(srv.ownerUsername);
+  (srv.members || []).forEach(k => keys.add(k));
+  (srv.moderators || []).forEach(k => keys.add(k));
+  return [...keys].map(key => {
+    const acc = accounts[key];
+    return {
+      name: publicName(acc, key),
+      username: (acc && acc.username) || key,
+      key,
+      avatarUrl: (acc && acc.avatarUrl) || '',
+      role: staffRoleForMember(srv, key)
+    };
+  }).sort((a, b) => {
+    const rank = { owner: 0, moderator: 1, member: 2 };
+    const d = (rank[a.role] ?? 3) - (rank[b.role] ?? 3);
+    if (d) return d;
+    return String(a.name).localeCompare(String(b.name), 'pt');
+  });
+}
+
+function sanitizeInviteRoleIds(srv, raw) {
+  ensureServerRoleModel(srv);
+  const allowed = new Set((srv.roleDefinitions || []).filter(r => r && !r.managed).map(r => r.id));
+  return [...new Set((Array.isArray(raw) ? raw : []).map(id => String(id || '')))]
+    .filter(id => allowed.has(id))
+    .slice(0, 20);
+}
+
+function notifyServerMembers(srv) {
+  for (const [, s] of io.sockets.sockets) {
+    if (s.username && isMemberOfServer(srv, s.username)) sendMyServers(s);
+  }
 }
 
 // Status personalizado ("jogando CS", "estudando"...) — texto curto ao lado do
@@ -1046,7 +1109,8 @@ function sendMyServers(socket) {
       myPermissions: permissionsForMember(srv, socket.username),
       inviteCode: (isOwnerOfServer(socket, srv) || hasServerPermission(socket, srv, 'manageInvites'))
         ? srv.inviteCode : undefined,
-      channels: visibleChannelsFor(socket, srv)
+      channels: visibleChannelsFor(socket, srv),
+      roster: serverRoster(srv)
       });
     });
   socket.emit('my-servers', mine);
@@ -1078,7 +1142,8 @@ function publicInvite(invite) {
     expiresAt: invite.expiresAt || 0,
     maxUses: invite.maxUses || 0,
     uses: invite.uses || 0,
-    revoked: !!invite.revoked
+    revoked: !!invite.revoked,
+    roleIds: Array.isArray(invite.roleIds) ? invite.roleIds : []
   };
 }
 
@@ -1134,9 +1199,10 @@ function keyOf(username) {
 // friends: cada lado guarda o outro (sempre simétrico). requests: pedidos
 // pendentes, indexados por quem RECEBEU (pra mostrar "fulano quer ser seu amigo").
 const FRIENDS_FILE = path.join(DATA_DIR, 'friends.json');
-let friendsData = { friends: {}, requests: {} };
+let friendsData = { friends: {}, requests: {}, blocks: {} };
 try {
-  if (fs.existsSync(FRIENDS_FILE)) friendsData = { friends: {}, requests: {}, ...JSON.parse(fs.readFileSync(FRIENDS_FILE, 'utf8')) };
+  if (fs.existsSync(FRIENDS_FILE)) friendsData = { friends: {}, requests: {}, blocks: {}, ...JSON.parse(fs.readFileSync(FRIENDS_FILE, 'utf8')) };
+  if (!friendsData.blocks) friendsData.blocks = {};
 } catch (e) { console.error('[DSpeak] Falha ao ler friends.json:', e.message); }
 
 function saveFriends() {
@@ -1148,7 +1214,19 @@ function areFriends(a, b) {
   return (friendsData.friends[a] || []).includes(b);
 }
 
+function isBlockedEither(a, b) {
+  return (friendsData.blocks[a] || []).includes(b) || (friendsData.blocks[b] || []).includes(a);
+}
+
+function removeFriendshipBoth(a, b) {
+  friendsData.friends[a] = (friendsData.friends[a] || []).filter(k => k !== b);
+  friendsData.friends[b] = (friendsData.friends[b] || []).filter(k => k !== a);
+  friendsData.requests[a] = (friendsData.requests[a] || []).filter(k => k !== b);
+  friendsData.requests[b] = (friendsData.requests[b] || []).filter(k => k !== a);
+}
+
 function addFriendship(a, b) {
+  if (isBlockedEither(a, b)) return;
   friendsData.friends[a] = friendsData.friends[a] || [];
   friendsData.friends[b] = friendsData.friends[b] || [];
   if (!friendsData.friends[a].includes(b)) friendsData.friends[a].push(b);
@@ -1182,14 +1260,20 @@ function findSocketsByUsername(username) {
 // status personalizado — pronta pra desenhar no modal de Amigos do cliente.
 function friendsPayloadFor(key) {
   const list = (friendsData.friends[key] || []).map(fk => ({
-    name: (accounts[fk] && accounts[fk].username) || fk,
+    name: publicName(accounts[fk], fk),
+    username: (accounts[fk] && accounts[fk].username) || fk,
     avatarUrl: (accounts[fk] && accounts[fk].avatarUrl) || null,
     online: findSocketsByUsername(fk).length > 0,
     status: userStatuses[fk] || 'online',
     customStatus: userCustomStatus[fk] || ''
   }));
   const requests = (friendsData.requests[key] || []).map(fk => (accounts[fk] && accounts[fk].username) || fk);
-  return { friends: list, requests };
+  const blocked = (friendsData.blocks[key] || []).map(fk => ({
+    name: publicName(accounts[fk], fk),
+    username: (accounts[fk] && accounts[fk].username) || fk,
+    avatarUrl: (accounts[fk] && accounts[fk].avatarUrl) || null
+  }));
+  return { friends: list, requests, blocked };
 }
 
 function pushFriendsTo(key) {
@@ -1197,10 +1281,14 @@ function pushFriendsTo(key) {
 }
 
 // Atualiza o campo "role" de um usuário em todas as listas de voz que ele estiver.
+function voiceIdentityKey(u) {
+  return keyOf((u && (u.usernameKey || u.username || u.name)) || '');
+}
+
 function syncRoleIntoVoiceLists(usernameKey, newRole) {
   Object.keys(voiceUsers).forEach(channelId => {
     voiceUsers[channelId] = voiceUsers[channelId].map(u =>
-      keyOf(u.name) === usernameKey ? { ...u, role: newRole } : u
+      voiceIdentityKey(u) === usernameKey ? { ...u, role: newRole } : u
     );
   });
 }
@@ -1301,7 +1389,198 @@ function newSessionToken() {
 function isValidUsername(name) {
   const s = String(name || '').trim();
   if (s.length < 2 || s.length > 24) return false;
-  return /^[\p{L}\p{N} _.\-]+$/u.test(s);
+  return /^[A-Za-z0-9._]+$/.test(s);
+}
+
+function isValidDisplayName(name) {
+  const s = String(name || '').trim();
+  if (s.length < 2 || s.length > 24) return false;
+  return !/[\n\r<>]/.test(s);
+}
+
+const MAX_USERNAME_CHANGES = 3;
+
+function usernameChangesLeft(acc) {
+  return Math.max(0, MAX_USERNAME_CHANGES - (Number(acc && acc.usernameChanges) || 0));
+}
+
+function findAccountKeyByLogin(name) {
+  const k = keyOf(name);
+  if (!k) return null;
+  const byCurrent = Object.keys(accounts).find((key) => accounts[key] && keyOf(accounts[key].username) === k);
+  if (byCurrent) return byCurrent;
+  if (accounts[k]) return k;
+  return null;
+}
+
+function findAccountKeyByToken(token) {
+  const t = String(token || '');
+  if (!t) return null;
+  return Object.keys(accounts).find((key) => accounts[key] && accounts[key].sessionToken === t) || null;
+}
+
+function remapKeyedList(bucket, oldKey, newKey) {
+  if (!bucket || typeof bucket !== 'object') return;
+  if (Object.prototype.hasOwnProperty.call(bucket, oldKey)) {
+    if (!Object.prototype.hasOwnProperty.call(bucket, newKey)) bucket[newKey] = bucket[oldKey];
+    delete bucket[oldKey];
+  }
+  Object.keys(bucket).forEach((k) => {
+    if (Array.isArray(bucket[k])) {
+      bucket[k] = bucket[k].map((x) => (x === oldKey ? newKey : x));
+    }
+  });
+}
+
+function remapDmIdentity(oldKey, newKey, newUsername) {
+  const next = {};
+  Object.keys(directMessages).forEach((pair) => {
+    const parts = String(pair).split('|');
+    if (parts.length !== 2) {
+      next[pair] = directMessages[pair];
+      return;
+    }
+    const na = parts[0] === oldKey ? newKey : parts[0];
+    const nb = parts[1] === oldKey ? newKey : parts[1];
+    const newPair = na < nb ? `${na}|${nb}` : `${nb}|${na}`;
+    const msgs = (directMessages[pair] || []).map((m) => (
+      keyOf(m && m.from) === oldKey ? { ...m, from: newUsername } : m
+    ));
+    next[newPair] = (next[newPair] || []).concat(msgs);
+  });
+  directMessages = next;
+  saveDirectMessages();
+}
+
+async function renameAccountUsername(oldKey, newUsername, opts) {
+  const skipChangeCount = !!(opts && opts.skipChangeCount);
+  const acc = accounts[oldKey];
+  if (!acc) return { ok: false, message: 'Conta não encontrada.' };
+  const newKey = keyOf(newUsername);
+  if (!isValidUsername(newUsername)) {
+    return { ok: false, message: 'Nome de usuário inválido (2 a 24 letras ou números, só . e _).' };
+  }
+  if (newKey === oldKey) {
+    acc.username = newUsername;
+    await persistAccount(oldKey, acc);
+    findSocketsByUsername(oldKey).forEach((s) => { s.username = newUsername; });
+    broadcastAccountPublicProfile(oldKey);
+    return { ok: true, username: newUsername, usernameKey: oldKey, usernameChangesLeft: usernameChangesLeft(acc), changedKey: false };
+  }
+  if (!skipChangeCount && usernameChangesLeft(acc) <= 0) {
+    return { ok: false, message: 'Você já usou as 3 trocas de nome de usuário.' };
+  }
+  const taken = findAccountKeyByLogin(newUsername);
+  if (taken && taken !== oldKey) {
+    return { ok: false, message: 'Esse nome de usuário já está em uso.' };
+  }
+  if (accounts[newKey] && newKey !== oldKey) {
+    return { ok: false, message: 'Esse nome de usuário já está em uso.' };
+  }
+
+  acc.username = newUsername;
+  if (!skipChangeCount) acc.usernameChanges = (Number(acc.usernameChanges) || 0) + 1;
+  accounts[newKey] = acc;
+  delete accounts[oldKey];
+
+  if (roles[oldKey] !== undefined) {
+    roles[newKey] = roles[oldKey];
+    delete roles[oldKey];
+    saveRoles();
+  }
+  if (userStatuses[oldKey] !== undefined) {
+    userStatuses[newKey] = userStatuses[oldKey];
+    delete userStatuses[oldKey];
+  }
+  if (userCustomStatus[oldKey] !== undefined) {
+    userCustomStatus[newKey] = userCustomStatus[oldKey];
+    delete userCustomStatus[oldKey];
+  }
+  if (userPlaylists[oldKey] !== undefined) {
+    userPlaylists[newKey] = userPlaylists[oldKey];
+    delete userPlaylists[oldKey];
+    savePlaylists();
+  }
+  if (pushState.devices && pushState.devices[oldKey] !== undefined) {
+    pushState.devices[newKey] = pushState.devices[oldKey];
+    delete pushState.devices[oldKey];
+  }
+  if (pushState.preferences && pushState.preferences[oldKey] !== undefined) {
+    pushState.preferences[newKey] = pushState.preferences[oldKey];
+    delete pushState.preferences[oldKey];
+  }
+  if (pushState.devices || pushState.preferences) savePushState();
+
+  remapKeyedList(friendsData.friends, oldKey, newKey);
+  remapKeyedList(friendsData.requests, oldKey, newKey);
+  remapKeyedList(friendsData.blocks, oldKey, newKey);
+  saveFriends();
+
+  dspeakServers.forEach((srv) => {
+    if (srv.ownerUsername === oldKey) srv.ownerUsername = newKey;
+    srv.members = (srv.members || []).map((x) => (x === oldKey ? newKey : x));
+    srv.moderators = (srv.moderators || []).map((x) => (x === oldKey ? newKey : x));
+    if (srv.memberRoleIds && srv.memberRoleIds[oldKey]) {
+      srv.memberRoleIds[newKey] = srv.memberRoleIds[oldKey];
+      delete srv.memberRoleIds[oldKey];
+    }
+  });
+  saveServers();
+
+  remapDmIdentity(oldKey, newKey, newUsername);
+  Object.keys(messages).forEach((roomId) => {
+    messages[roomId] = (messages[roomId] || []).map((m) => (
+      keyOf(m && m.user) === oldKey ? { ...m, user: newUsername } : m
+    ));
+  });
+  saveMessages();
+
+  for (const [, s] of io.sockets.sockets) {
+    if (s.usernameKey === oldKey) {
+      s.usernameKey = newKey;
+      s.username = newUsername;
+    }
+  }
+  Object.keys(voiceUsers).forEach((channelId) => {
+    voiceUsers[channelId] = (voiceUsers[channelId] || []).map((u) => (
+      keyOf(u.usernameKey || u.username) === oldKey
+        ? { ...u, username: newUsername, usernameKey: newKey }
+        : u
+    ));
+  });
+
+  if (db.enabled) {
+    await db.deleteUser(oldKey).catch(() => {});
+  }
+  await persistAccount(newKey, acc);
+  broadcastAccountPublicProfile(newKey);
+  io.emit('update-voice-users', voiceUsers);
+  io.emit('user-statuses', userStatuses);
+  io.emit('user-custom-statuses', userCustomStatus);
+  broadcastOnlineUsers();
+  return {
+    ok: true,
+    username: newUsername,
+    usernameKey: newKey,
+    usernameChangesLeft: usernameChangesLeft(acc),
+    changedKey: true
+  };
+}
+
+function publicName(acc, fallback) {
+  const nick = String((acc && acc.displayName) || '').trim();
+  return nick || (acc && acc.username) || fallback || '';
+}
+
+function accountNeedsDisplayName(acc) {
+  return !String((acc && acc.displayName) || '').trim();
+}
+
+function accountNeedsUsernameClaim(acc) {
+  if (!acc) return false;
+  if (acc.usernameClaimed) return false;
+  if ((Number(acc.usernameChanges) || 0) > 0) return false;
+  return true;
 }
 
 function isValidPassword(pw) {
@@ -1314,6 +1593,7 @@ function persistAccount(key, acc) {
     return db.upsertUser({
       usernameKey: key,
       username: acc.username,
+      displayName: acc.displayName || null,
       passwordHash: acc.passwordHash,
       recoveryHash: acc.recoveryHash || null,
       avatarUrl: acc.avatarUrl || null,
@@ -1321,7 +1601,9 @@ function persistAccount(key, acc) {
       createdAt: acc.createdAt || Date.now(),
       email: acc.email || null,
       passwordResetHash: acc.passwordResetHash || null,
-      passwordResetExpires: acc.passwordResetExpires || null
+      passwordResetExpires: acc.passwordResetExpires || null,
+      usernameChanges: Number(acc.usernameChanges) || 0,
+      usernameClaimed: !!acc.usernameClaimed
     }).catch((e) => console.error('[DSpeak] Não consegui gravar a conta no Postgres:', e.message));
   }
   saveAccounts();
@@ -1356,9 +1638,14 @@ function publicAppUrl() {
 function authPayload(acc) {
   return {
     username: acc.username,
+    displayName: acc.displayName || '',
+    needsDisplayName: accountNeedsDisplayName(acc),
+    needsUsernameClaim: accountNeedsUsernameClaim(acc),
     avatarUrl: acc.avatarUrl || '',
     token: acc.sessionToken,
-    email: acc.email || ''
+    email: acc.email || '',
+    usernameChanges: Number(acc.usernameChanges) || 0,
+    usernameChangesLeft: usernameChangesLeft(acc)
   };
 }
 
@@ -1367,7 +1654,8 @@ const lastResetRequestAt = new Map();
 function attachUserSession(socket, username, avatarUrl) {
   socket.username = username;
   socket.avatarUrl = avatarUrl || '';
-  socket.usernameKey = keyOf(username);
+  socket.usernameKey = findAccountKeyByLogin(username) || keyOf(username);
+  socket.displayName = publicName(accounts[socket.usernameKey], username);
 
   const role = resolveRole(username);
   socket.role = role;
@@ -1384,7 +1672,45 @@ function attachUserSession(socket, username, avatarUrl) {
   sendMyServers(socket);
   socket.emit('user-statuses', userStatuses);
   socket.emit('user-custom-statuses', userCustomStatus);
+  socket.emit('users-online', onlineUsernameKeys());
   if (socket.usernameKey) socket.emit('friends-data', friendsPayloadFor(socket.usernameKey));
+  broadcastOnlineUsers();
+}
+
+function socketNeedsDisplayName(socket) {
+  if (!socket || !socket.usernameKey || socket.isGuest) return false;
+  return accountNeedsUsernameClaim(accounts[socket.usernameKey]);
+}
+
+function syncDisplayIntoVoiceLists(socket) {
+  if (!socket) return;
+  const shown = socket.isGuest
+    ? socket.username
+    : publicName(accounts[socket.usernameKey], socket.username);
+  socket.displayName = shown;
+  Object.keys(voiceUsers).forEach(channelId => {
+    voiceUsers[channelId] = voiceUsers[channelId].map(u =>
+      u.socketId === socket.id
+        ? {
+            ...u,
+            name: shown,
+            displayName: shown,
+            username: socket.username,
+            usernameKey: socket.usernameKey
+          }
+        : u
+    );
+  });
+}
+
+function broadcastAccountPublicProfile(usernameKey) {
+  findSocketsByUsername(usernameKey).forEach(syncDisplayIntoVoiceLists);
+  io.emit('update-voice-users', voiceUsers);
+  dspeakServers.forEach(srv => {
+    if (isMemberOfServer(srv, usernameKey)) notifyServerMembers(srv);
+  });
+  pushFriendsTo(usernameKey);
+  (friendsData.friends[usernameKey] || []).forEach(fk => pushFriendsTo(fk));
 }
 
 const chatRateByUser = new Map();
@@ -1408,16 +1734,20 @@ io.on('connection', (socket) => {
   socket.on('register-user', async (data) => {
     try {
       const username = String((data && data.username) || '').trim();
-      if (!isValidUsername(username)) {
-        socket.emit('auth-failed', { message: 'Apelido inválido (2 a 24 letras, números, espaço, ponto ou hífen).' });
+      const mode = data && data.mode;
+      if (mode === 'register' && !isValidUsername(username)) {
+        socket.emit('auth-failed', { message: 'Nome de usuário inválido (2 a 24 letras ou números, só . e _).' });
         return;
       }
-      const key = keyOf(username);
-      const mode = data && data.mode;
+      if (mode !== 'register' && !username && !(data && data.token)) {
+        socket.emit('auth-failed', { message: 'Digite o nome de usuário.' });
+        return;
+      }
       const password = data && data.password;
       const token = data && data.token;
-      let acc = accounts[key];
       const incomingAvatar = typeof (data && data.avatarUrl) === 'string' ? data.avatarUrl : '';
+      let key = findAccountKeyByToken(token) || findAccountKeyByLogin(username);
+      let acc = key ? accounts[key] : null;
 
       // Reconexão automática: o app guarda um token depois do login.
       if (token && acc && acc.sessionToken && token === acc.sessionToken) {
@@ -1438,17 +1768,24 @@ io.on('connection', (socket) => {
           socket.emit('auth-failed', { message: 'Digite um e-mail válido. É nele que a gente manda o link se você esquecer a senha.' });
           return;
         }
-        if (acc) {
-          socket.emit('auth-failed', { message: 'Esse apelido já tem conta. Entra com a senha.' });
+        const newKey = keyOf(username);
+        if (findAccountKeyByLogin(username) || accounts[newKey]) {
+          socket.emit('auth-failed', { message: 'Esse nome de usuário já tem conta. Entra com a senha.' });
           return;
         }
         const emailOwner = findAccountKeyByEmail(email);
         if (emailOwner) {
-          socket.emit('auth-failed', { message: 'Esse e-mail já está em outra conta. Entra com o apelido dela, ou usa outro e-mail.' });
+          socket.emit('auth-failed', { message: 'Esse e-mail já está em outra conta. Entra com o nome de usuário dela, ou usa outro e-mail.' });
+          return;
+        }
+        const displayName = String((data && data.displayName) || '').trim();
+        if (!isValidDisplayName(displayName)) {
+          socket.emit('auth-failed', { message: 'Digite um apelido (2 a 24 caracteres, sem quebra de linha).' });
           return;
         }
         acc = {
           username,
+          displayName,
           passwordHash: hashServerPassword(password),
           recoveryHash: '',
           avatarUrl: incomingAvatar,
@@ -1456,9 +1793,11 @@ io.on('connection', (socket) => {
           createdAt: Date.now(),
           email,
           passwordResetHash: '',
-          passwordResetExpires: 0
+          passwordResetExpires: 0,
+          usernameChanges: 0,
+          usernameClaimed: true
         };
-        await persistAccount(key, acc);
+        await persistAccount(newKey, acc);
         attachUserSession(socket, username, acc.avatarUrl);
         socket.emit('auth-ok', authPayload(acc));
         return;
@@ -1466,7 +1805,7 @@ io.on('connection', (socket) => {
 
       if (mode === 'login' || (typeof password === 'string' && password.length > 0)) {
         if (!acc) {
-          socket.emit('auth-failed', { message: 'Não achei uma conta com esse apelido. Cria uma em "Criar conta".' });
+          socket.emit('auth-failed', { message: 'Não achei uma conta com esse nome de usuário. Cria uma em "Criar conta".' });
           return;
         }
         if (!acc.passwordHash || !verifyServerPassword(password, acc.passwordHash)) {
@@ -1617,8 +1956,12 @@ io.on('connection', (socket) => {
 
   socket.on('friend-request', (data) => {
     if (!socket.usernameKey || socket.isGuest) return;
-    const targetKey = keyOf(String(data && data.to || ''));
+    const targetKey = findAccountKeyByLogin(String(data && data.to || ''));
     if (!targetKey || targetKey === socket.usernameKey) return;
+    if (isBlockedEither(socket.usernameKey, targetKey)) {
+      socket.emit('action-denied', { message: 'Não dá pra adicionar essa pessoa.' });
+      return;
+    }
     if (!accounts[targetKey]) {
       socket.emit('action-denied', { message: 'Não existe ninguém com esse nome no DSpeak.' });
       return;
@@ -1654,9 +1997,17 @@ io.on('connection', (socket) => {
 
   socket.on('friend-respond', (data) => {
     if (!socket.usernameKey || socket.isGuest) return;
-    const fromKey = keyOf(String(data && data.from || ''));
+    const fromKey = findAccountKeyByLogin(String(data && data.from || ''));
     if (!fromKey || !(friendsData.requests[socket.usernameKey] || []).includes(fromKey)) return;
     if (data && data.accept) {
+      if (isBlockedEither(socket.usernameKey, fromKey)) {
+        friendsData.requests[socket.usernameKey] =
+          (friendsData.requests[socket.usernameKey] || []).filter(k => k !== fromKey);
+        saveFriends();
+        socket.emit('action-denied', { message: 'Não dá pra adicionar essa pessoa.' });
+        pushFriendsTo(socket.usernameKey);
+        return;
+      }
       addFriendship(socket.usernameKey, fromKey);
       findSocketsByUsername(fromKey).forEach(s =>
         s.emit('action-done', { message: `${socket.username} aceitou seu pedido de amizade!` }));
@@ -1671,7 +2022,7 @@ io.on('connection', (socket) => {
 
   socket.on('friend-remove', (data) => {
     if (!socket.usernameKey || socket.isGuest) return;
-    const targetKey = keyOf(String(data && data.name || ''));
+    const targetKey = findAccountKeyByLogin(String(data && data.name || ''));
     if (!targetKey) return;
     friendsData.friends[socket.usernameKey] =
       (friendsData.friends[socket.usernameKey] || []).filter(k => k !== targetKey);
@@ -1680,6 +2031,35 @@ io.on('connection', (socket) => {
     saveFriends();
     pushFriendsTo(socket.usernameKey);
     pushFriendsTo(targetKey);
+  });
+
+  socket.on('friend-block', (data) => {
+    if (!socket.usernameKey || socket.isGuest) return;
+    const targetKey = findAccountKeyByLogin(String(data && data.name || ''));
+    if (!targetKey || targetKey === socket.usernameKey) return;
+    if (!accounts[targetKey]) {
+      socket.emit('action-denied', { message: 'Não existe ninguém com esse nome no DSpeak.' });
+      return;
+    }
+    removeFriendshipBoth(socket.usernameKey, targetKey);
+    friendsData.blocks[socket.usernameKey] = friendsData.blocks[socket.usernameKey] || [];
+    if (!friendsData.blocks[socket.usernameKey].includes(targetKey)) {
+      friendsData.blocks[socket.usernameKey].push(targetKey);
+    }
+    saveFriends();
+    pushFriendsTo(socket.usernameKey);
+    pushFriendsTo(targetKey);
+    socket.emit('action-done', { message: `${(accounts[targetKey] && accounts[targetKey].username) || targetKey} foi bloqueado.` });
+  });
+
+  socket.on('friend-unblock', (data) => {
+    if (!socket.usernameKey || socket.isGuest) return;
+    const targetKey = findAccountKeyByLogin(String(data && data.name || '')) || keyOf(String(data && data.name || ''));
+    if (!targetKey) return;
+    friendsData.blocks[socket.usernameKey] = (friendsData.blocks[socket.usernameKey] || []).filter(k => k !== targetKey);
+    saveFriends();
+    pushFriendsTo(socket.usernameKey);
+    socket.emit('action-done', { message: 'Usuário desbloqueado.' });
   });
 
   socket.on('change-password', async (data) => {
@@ -1847,7 +2227,7 @@ io.on('connection', (socket) => {
       socket.emit('password-reset-done', {
         ok: true,
         username: acc.username,
-        message: 'Senha atualizada. Entra com o apelido e a senha nova.'
+        message: 'Senha atualizada. Entra com o nome de usuário e a senha nova.'
       });
     } catch (e) {
       console.error('[DSpeak] Falha ao redefinir senha:', e);
@@ -1858,24 +2238,143 @@ io.on('connection', (socket) => {
   // Atualiza apelido/avatar em tempo real pra todo mundo, sem precisar de F5.
   // Sem isso, só o rodapé de quem mudou o perfil atualizava (feito localmente);
   // a lista de voz e os cards do palco ficavam com os dados antigos até reconectar.
-  socket.on('change-profile', (data) => {
+  socket.on('change-profile', async (data) => {
     if (!socket.username || socket.isGuest) return;
-    // O apelido da conta não muda mais (é o login). Só a foto.
-    const avatarUrl = data && data.avatarUrl;
-    socket.avatarUrl = avatarUrl || '';
     const acc = accounts[socket.usernameKey];
-    if (acc) {
+    if (!acc) return;
+    if (data && Object.prototype.hasOwnProperty.call(data, 'avatarUrl')) {
+      socket.avatarUrl = data.avatarUrl || '';
       acc.avatarUrl = socket.avatarUrl;
-      if (db.enabled) db.updateUserAvatar(socket.usernameKey, acc.avatarUrl).catch(() => {});
-      else saveAccounts();
     }
-
-    Object.keys(voiceUsers).forEach(channelId => {
-      voiceUsers[channelId] = voiceUsers[channelId].map(u =>
-        u.socketId === socket.id ? { ...u, avatarUrl: socket.avatarUrl } : u
-      );
+    if (data && data.displayName !== undefined) {
+      const nick = String(data.displayName || '').trim();
+      if (!isValidDisplayName(nick)) {
+        socket.emit('action-denied', { message: 'Apelido inválido (2 a 24 caracteres).' });
+        return;
+      }
+      acc.displayName = nick;
+      socket.displayName = nick;
+    }
+    await persistAccount(socket.usernameKey, acc);
+    broadcastAccountPublicProfile(socket.usernameKey);
+    socket.emit('display-name-updated', {
+      ok: true,
+      displayName: acc.displayName || '',
+      username: acc.username
     });
-    io.emit('update-voice-users', voiceUsers);
+  });
+
+  socket.on('set-display-name', async (data, cb) => {
+    const done = (payload) => { if (typeof cb === 'function') cb(payload); };
+    try {
+      if (!socket.usernameKey || socket.isGuest) {
+        return done({ ok: false, message: 'Entra na conta primeiro.' });
+      }
+      const acc = accounts[socket.usernameKey];
+      if (!acc) return done({ ok: false, message: 'Conta não encontrada.' });
+      const nick = String((data && data.displayName) || '').trim();
+      if (!isValidDisplayName(nick)) {
+        return done({ ok: false, message: 'Apelido inválido (2 a 24 caracteres).' });
+      }
+      acc.displayName = nick;
+      socket.displayName = nick;
+      await persistAccount(socket.usernameKey, acc);
+      broadcastAccountPublicProfile(socket.usernameKey);
+      const payload = { ok: true, displayName: nick, username: acc.username };
+      socket.emit('display-name-updated', payload);
+      done(payload);
+    } catch (e) {
+      console.error('[DSpeak] Falha ao salvar apelido:', e);
+      done({ ok: false, message: 'Não deu pra salvar o apelido agora.' });
+    }
+  });
+
+  socket.on('claim-username', async (data, cb) => {
+    const done = (payload) => { if (typeof cb === 'function') cb(payload); };
+    try {
+      if (!socket.usernameKey || socket.isGuest) {
+        return done({ ok: false, message: 'Entra na conta primeiro.' });
+      }
+      const acc = accounts[socket.usernameKey];
+      if (!acc) return done({ ok: false, message: 'Conta não encontrada.' });
+      if (!accountNeedsUsernameClaim(acc)) {
+        return done({
+          ok: true,
+          username: acc.username,
+          displayName: acc.displayName || acc.username,
+          token: acc.sessionToken || '',
+          usernameChangesLeft: usernameChangesLeft(acc)
+        });
+      }
+      const next = String((data && data.username) || '').trim();
+      if (!isValidUsername(next)) {
+        return done({ ok: false, message: 'Nome de usuário inválido (2 a 24 letras ou números, só . e _).' });
+      }
+      const currentName = acc.username;
+      const existingNick = String(acc.displayName || '').trim();
+      const prevDisplay = acc.displayName;
+      if (!existingNick || existingNick === next) {
+        acc.displayName = currentName;
+      }
+      const result = await renameAccountUsername(socket.usernameKey, next, { skipChangeCount: true });
+      if (!result.ok) {
+        acc.displayName = prevDisplay;
+        return done(result);
+      }
+      const updated = accounts[result.usernameKey];
+      if (updated) {
+        if (!String(updated.displayName || '').trim()) updated.displayName = currentName;
+        updated.usernameClaimed = true;
+        await persistAccount(result.usernameKey, updated);
+        findSocketsByUsername(result.usernameKey).forEach((s) => {
+          s.displayName = publicName(updated, result.username);
+        });
+        syncDisplayIntoVoiceLists(socket);
+        broadcastAccountPublicProfile(result.usernameKey);
+      }
+      done({
+        ok: true,
+        username: result.username,
+        displayName: (updated && updated.displayName) || currentName,
+        token: updated ? updated.sessionToken : '',
+        usernameChangesLeft: result.usernameChangesLeft,
+        email: updated ? (updated.email || '') : '',
+        message: 'Nome de usuário definido. Seu apelido nas salas continua o de antes.'
+      });
+    } catch (e) {
+      console.error('[DSpeak] Falha ao definir nome de usuário:', e);
+      done({ ok: false, message: 'Não deu pra salvar o nome de usuário agora.' });
+    }
+  });
+
+  socket.on('set-username', async (data, cb) => {
+    const done = (payload) => { if (typeof cb === 'function') cb(payload); };
+    try {
+      if (!socket.usernameKey || socket.isGuest) {
+        return done({ ok: false, message: 'Entra na conta primeiro.' });
+      }
+      const next = String((data && data.username) || '').trim();
+      const result = await renameAccountUsername(socket.usernameKey, next);
+      if (!result.ok) return done(result);
+      const acc = accounts[result.usernameKey];
+      if (acc) {
+        acc.usernameClaimed = true;
+        await persistAccount(result.usernameKey, acc);
+      }
+      done({
+        ok: true,
+        username: result.username,
+        displayName: acc ? (acc.displayName || '') : '',
+        token: acc ? acc.sessionToken : '',
+        usernameChangesLeft: result.usernameChangesLeft,
+        message: result.changedKey
+          ? `Nome de usuário atualizado. Restam ${result.usernameChangesLeft} troca(s).`
+          : 'Nome de usuário atualizado.'
+      });
+    } catch (e) {
+      console.error('[DSpeak] Falha ao trocar nome de usuário:', e);
+      done({ ok: false, message: 'Não deu pra trocar o nome de usuário agora.' });
+    }
   });
 
   socket.on('join-room', (roomId) => {
@@ -1974,6 +2473,10 @@ io.on('connection', (socket) => {
     // limitado (mesmo teto das DMs) — antes o servidor salvava e repassava
     // QUALQUER payload que o cliente mandasse, sem validar nada.
     if (!socket.username || !data || typeof data.room !== 'string') return;
+    if (socketNeedsDisplayName(socket)) {
+      socket.emit('username-claim-required');
+      return;
+    }
     const messageText = String(data.message || '').slice(0, 2000);
     const pollInput = data.poll && typeof data.poll === 'object' ? data.poll : null;
     if (!messageText.trim() && !data.attachment && !pollInput) return;
@@ -2051,6 +2554,7 @@ io.on('connection', (socket) => {
       message: messageText,
       attachment: data.attachment,
       user: socket.username,
+      displayName: publicName(accounts[socket.usernameKey], socket.username),
       avatarUrl: socket.avatarUrl,
       time: typeof data.time === 'string' ? data.time.slice(0, 20) : undefined,
       date: typeof data.date === 'string' ? data.date.slice(0, 20) : undefined,
@@ -2072,7 +2576,7 @@ io.on('connection', (socket) => {
     saveMessages();
     io.to(data.room).emit('chat-message', entry);
     const mentionKeys = new Set();
-    for (const match of messageText.matchAll(/@([\p{L}\p{N}_.-]{1,40})/gu)) {
+    for (const match of messageText.matchAll(/@([A-Za-z0-9._]{1,40})/g)) {
       const mentionedKey = keyOf(match[1]);
       if (mentionedKey && mentionedKey !== socket.usernameKey && accounts[mentionedKey]) {
         mentionKeys.add(mentionedKey);
@@ -2080,7 +2584,7 @@ io.on('connection', (socket) => {
     }
     mentionKeys.forEach(targetKey => {
       sendPushToUser(
-        targetKey, 'mention', `${socket.username} mencionou você`,
+        targetKey, 'mention', `${publicName(accounts[socket.usernameKey], socket.username)} mencionou você`,
         messageText.trim().slice(0, 180),
         { url: `https://dspeak.com.br/app?channel=${encodeURIComponent(data.room)}`, type: 'mention' }
       );
@@ -2239,10 +2743,15 @@ io.on('connection', (socket) => {
     const message = String(data && data.message || '').trim().slice(0, 2000);
     if (!toUsername || (!message && !(data && data.attachment) && !(data && data.callInvite))) return;
     if (keyOf(toUsername) === socket.usernameKey) return; // não manda DM pra si mesmo
+    if (isBlockedEither(socket.usernameKey, keyOf(toUsername))) {
+      socket.emit('action-denied', { message: 'Não dá pra mandar mensagem pra essa pessoa.' });
+      return;
+    }
 
     const pairKey = dmPairKey(socket.username, toUsername);
     const entry = {
       from: socket.username,
+      fromDisplayName: publicName(accounts[socket.usernameKey], socket.username),
       fromAvatarUrl: socket.avatarUrl,
       message,
       attachment: data && data.attachment,
@@ -2276,7 +2785,9 @@ io.on('connection', (socket) => {
     sendPushToUser(
       toUsername,
       isCallInvite ? 'invite' : 'dm',
-      isCallInvite ? `${socket.username} convidou você para uma chamada` : `Mensagem de ${socket.username}`,
+      isCallInvite
+        ? `${publicName(accounts[socket.usernameKey], socket.username)} convidou você para uma chamada`
+        : `Mensagem de ${publicName(accounts[socket.usernameKey], socket.username)}`,
       isCallInvite ? `Entrar em ${entry.callInvite.channelName}` : (message || 'Enviou um anexo'),
       {
         url: 'https://dspeak.com.br/app',
@@ -2394,6 +2905,37 @@ io.on('connection', (socket) => {
     broadcastChannelsSync(ch.serverId);
   });
 
+  // Dono rearranja as salas/canais de um tipo (voice ou text) arrastando na lista.
+  socket.on('reorder-channels', (data) => {
+    const serverId = data && data.serverId;
+    const type = data && data.type;
+    const orderedIds = Array.isArray(data && data.orderedIds) ? data.orderedIds.map(String) : [];
+    const srv = dspeakServers.find(s => s.id === serverId);
+    if (!srv) {
+      socket.emit('reorder-channels-failed', { message: 'Servidor não encontrado.' });
+      return;
+    }
+    if (!isOwnerOfServer(socket, srv)) {
+      socket.emit('reorder-channels-failed', { message: 'Só o dono do servidor pode mover as salas.' });
+      return;
+    }
+    if (type !== 'voice' && type !== 'text') return;
+    const ofType = channels.filter(c => c.serverId === serverId && c.type === type);
+    const map = new Map(ofType.map(c => [c.id, c]));
+    const provided = orderedIds.filter(id => map.has(id));
+    if (provided.length < 2 || new Set(provided).size !== provided.length) {
+      socket.emit('reorder-channels-failed', { message: 'Não deu pra mover essa sala.' });
+      return;
+    }
+    // Canais invisíveis (só-mods) ficam no lugar; só as salas que o dono vê são permutadas.
+    let visIdx = 0;
+    const reordered = ofType.map(c => provided.includes(c.id) ? map.get(provided[visIdx++]) : c);
+    let i = 0;
+    channels = channels.map(c => (c.serverId === serverId && c.type === type) ? reordered[i++] : c);
+    saveChannels();
+    broadcastChannelsSync(serverId);
+  });
+
   // ---------- Criar um servidor novo (qualquer pessoa logada pode; quem cria vira
   // o dono DELE — com poder de promover Moderadores lá dentro) ----------
   socket.on('create-server', (data) => {
@@ -2499,7 +3041,8 @@ io.on('connection', (socket) => {
       createdBy: socket.usernameKey,
       createdAt: Date.now(),
       expiresAt: durationMinutes ? Date.now() + durationMinutes * 60000 : 0,
-      maxUses, uses: 0, revoked: false
+      maxUses, uses: 0, revoked: false,
+      roleIds: sanitizeInviteRoleIds(srv, data && data.roleIds)
     };
     srv.invites = Array.isArray(srv.invites) ? srv.invites : [];
     srv.invites.push(invite);
@@ -2546,8 +3089,7 @@ io.on('connection', (socket) => {
     }
 
     if (isMemberOfServer(srv, socket.username)) {
-      // Já é membro — só reenvia a lista e manda pra lá mesmo assim (cobre o caso de
-      // clicar num link de convite de um servidor que a pessoa já está).
+      // Já é membro — não reaplica cargos do convite.
       sendMyServers(socket);
       socket.emit('server-joined', { serverId: srv.id, channelId: invite && invite.channelId });
       return;
@@ -2560,10 +3102,17 @@ io.on('connection', (socket) => {
 
     srv.members = srv.members || [];
     if (!srv.members.includes(socket.usernameKey)) srv.members.push(socket.usernameKey);
-    if (invite) invite.uses = Number(invite.uses || 0) + 1;
+    if (invite) {
+      invite.uses = Number(invite.uses || 0) + 1;
+      const grant = sanitizeInviteRoleIds(srv, invite.roleIds);
+      if (grant.length) {
+        const cur = Array.isArray(srv.memberRoleIds[socket.usernameKey]) ? srv.memberRoleIds[socket.usernameKey] : [];
+        srv.memberRoleIds[socket.usernameKey] = [...new Set([...cur, ...grant])];
+      }
+    }
     saveServers();
 
-    sendMyServers(socket);
+    notifyServerMembers(srv);
     // Avisa o cliente pra TROCAR pra esse servidor agora — sem isso, a pessoa
     // continuava vendo o servidor em que já estava (ex: o padrão), mesmo já sendo
     // membro do novo, porque 'my-servers' sozinho só atualiza a LISTA, não diz pra
@@ -2899,16 +3448,21 @@ io.on('connection', (socket) => {
     // de verdade — que pode demorar até pingTimeout (60s, configurado acima) —
     // deixando as duas entradas (antiga e nova) da mesma pessoa na lista ao mesmo
     // tempo até lá.
-    const normalizedName = String(username || '').trim().toLowerCase();
+    if (socketNeedsDisplayName(socket)) {
+      socket.emit('username-claim-required');
+      return;
+    }
+
+    const identityKey = socket.usernameKey || keyOf(username);
     const staleSocketIds = new Set();
     Object.keys(voiceUsers).forEach(chId => {
       (voiceUsers[chId] || []).forEach(u => {
-        if (u.socketId !== socket.id && String(u.name || '').trim().toLowerCase() === normalizedName) {
+        if (u.socketId !== socket.id && voiceIdentityKey(u) === identityKey) {
           staleSocketIds.add(u.socketId);
         }
       });
       voiceUsers[chId] = (voiceUsers[chId] || []).filter(u =>
-        u.socketId !== socket.id && String(u.name || '').trim().toLowerCase() !== normalizedName
+        u.socketId !== socket.id && voiceIdentityKey(u) !== identityKey
       );
     });
     // O socket antigo (se ainda estiver de pé, só não tinha caído de vez ainda) é
@@ -2930,15 +3484,22 @@ io.on('connection', (socket) => {
     });
 
     if (!voiceUsers[channelId]) voiceUsers[channelId] = [];
+    const shownName = socket.isGuest
+      ? (socket.username || username)
+      : publicName(accounts[socket.usernameKey], socket.username || username);
     voiceUsers[channelId].push({
       socketId: socket.id,
-      name: username,
+      name: shownName,
+      displayName: shownName,
+      username: socket.username || username,
+      usernameKey: socket.usernameKey || keyOf(username),
       avatarUrl,
       muted: !!socket.currentMuted || !!socket.currentServerMuted,
       deafened: !!socket.currentDeafened,
       serverMuted: !!socket.currentServerMuted,
       raisedHand: !!socket.currentRaisedHand,
-      role: socket.role
+      role: socket.role,
+      streaming: !!(activeRoomStreams[channelId] && activeRoomStreams[channelId].includes(socket.id))
     });
 
     socket.currentVoiceChannel = channelId;
@@ -2983,6 +3544,8 @@ io.on('connection', (socket) => {
     if (!activeRoomStreams[channelId].includes(socket.id)) {
       activeRoomStreams[channelId].push(socket.id);
     }
+    markVoiceUserStreaming(socket.id, true);
+    io.emit('update-voice-users', voiceUsers);
     socket.to(channelId).emit('user-started-streaming', socket.id);
   });
 
@@ -2992,6 +3555,8 @@ io.on('connection', (socket) => {
     }
     // Fecha SÓ os producers da tela — a voz (mic via SFU) continua de pé.
     sfu.closeProducersBySource(socket.id, 'screen');
+    markVoiceUserStreaming(socket.id, false);
+    io.emit('update-voice-users', voiceUsers);
     socket.to(channelId).emit('user-stopped-streaming', socket.id);
   });
 
@@ -3339,6 +3904,12 @@ io.on('connection', (socket) => {
     if (lastChannel) sfu.closeRouterIfUnused(lastChannel);
     socket.currentVoiceChannel = null;
     io.emit('update-voice-users', voiceUsers);
+    const goneKey = socket.usernameKey;
+    if (goneKey && findSocketsByUsername(goneKey).filter(s => s.id !== socket.id).length === 0) {
+      delete userStatuses[goneKey];
+      broadcastStatuses();
+    }
+    broadcastOnlineUsers();
   });
 });
 
@@ -3370,7 +3941,10 @@ async function boot() {
           createdAt: Number(row.created_at) || Date.now(),
           email: row.email || '',
           passwordResetHash: row.password_reset_hash || '',
-          passwordResetExpires: Number(row.password_reset_expires) || 0
+          passwordResetExpires: Number(row.password_reset_expires) || 0,
+          displayName: row.display_name || '',
+          usernameChanges: Number(row.username_changes) || 0,
+          usernameClaimed: !!row.username_claimed
         };
       });
     } else {

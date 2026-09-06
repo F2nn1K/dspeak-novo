@@ -11,6 +11,11 @@ users.json
 uploads/
 music.json
 push.json
+friends.json
+server.log
+
+# Segredos guardados na VPS
+.secrets/
 
 # Instalador do app desktop (106MB — sobe pra VPS via scp, não pelo git)
 downloads/

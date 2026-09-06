@@ -5,8 +5,11 @@ const path = require('path');
 const https = require('https');
 
 const TOKEN_URL = 'https://api.ai-coustics.io/v1/sdk/tokens';
-const MODEL_URL = 'https://artifacts.ai-coustics.io/models/quail-vf-2-2-s-16khz/v6/quail_vf_2_2_s_16khz_gf70x7zf_v14.aicmodel';
-const MODEL_CACHE = path.join(__dirname, 'aic-cache', 'quail-vf-2-2-s-16khz.aicmodel');
+// VF-L (não o S): mesmo isolador, modelo maior. Rook seria o timbre de call,
+// mas a licença atual já serve a linha Voice Focus — L @ enhancement 1.0 é o
+// teste honesto de “cortar interferente” sem trocar de vendor.
+const MODEL_URL = 'https://artifacts.ai-coustics.io/models/quail-vf-2-2-l-16khz/v7/quail_vf_2_2_l_16khz_horgwub0_v14.aicmodel';
+const MODEL_CACHE = path.join(__dirname, 'aic-cache', 'quail-vf-2-2-l-16khz.aicmodel');
 
 function readLicense() {
   if (process.env.AIC_SDK_LICENSE && process.env.AIC_SDK_LICENSE.trim()) {
@@ -133,7 +136,7 @@ async function ensureModelFile() {
       const st = fs.statSync(MODEL_CACHE);
       if (st.size > 100000) return MODEL_CACHE;
     } catch (e) { /* baixa abaixo */ }
-    console.log('[ai-coustics] Baixando modelo Voice Focus (uma vez, ~5 MB)...');
+    console.log('[ai-coustics] Baixando modelo Voice Focus L (uma vez, ~20 MB)...');
     await httpsDownload(MODEL_URL, MODEL_CACHE);
     return MODEL_CACHE;
   })();
@@ -171,7 +174,7 @@ function mount(app) {
     if (!allowToken(ip)) return res.status(429).json({ ok: false, error: 'rate-limit' });
     try {
       const out = await mintToken();
-      res.json({ ok: true, token: out.token, expiresAt: out.expiresAt, enhancementLevel: 0.85 });
+      res.json({ ok: true, token: out.token, expiresAt: out.expiresAt, enhancementLevel: 0.95 });
     } catch (e) {
       if (e.message === 'no-license') {
         return res.status(503).json({ ok: false, error: 'not-configured' });
