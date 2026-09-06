@@ -5623,9 +5623,11 @@
     let rnnoiseWorkletRegisteredCtx = null;
     let aicModPromise = null;
     const aicModelPromises = {}; // 'l' | 's' -> Promise<Model>
-    // Qual modelo usar: L (padrão, mais forte) ou S (leve). Quando o L picota na
-    // máquina da pessoa, o app desce pro S sozinho e memoriza no aparelho.
-    let aicModelVariant = localStorage.getItem('dspeak-aic-model') === 's' ? 's' : 'l';
+    // Qual modelo usar: L (padrão, mais forte) ou S (leve). O picote quase sempre
+    // é situação — sala cheia = CPU alta decodificando todo mundo — e não a máquina
+    // em si. Então a descida pro S vale SÓ pra call atual: a próxima recomeça no L.
+    let aicModelVariant = 'l';
+    try { localStorage.removeItem('dspeak-aic-model'); } catch (e) {} // limpa a trava da versão anterior
     let aicBadCycles = 0;
     let aicProcessor = null;
     let aicProcCtx = null;
@@ -5997,6 +5999,8 @@
 
         const micProfile = detectMicProfile(rawStream);
         aicMicIsBt = micProfile.bt;
+        aicModelVariant = 'l'; // cada call recomeça no modelo forte
+        aicBadCycles = 0;
         aicLiveLevel = loadAicLevel();
         aicUnderruns = 0;
         aicChopHits = 0;
@@ -6257,10 +6261,9 @@
             // Desce pro modelo S (leve) uma vez só e memoriza no aparelho —
             // na próxima call a pessoa já entra direto no S, sem picotar.
             if (aicBadCycles >= 3 && aicModelVariant === 'l' && aicProcessor) {
-              aicModelVariant = 's';
+              aicModelVariant = 's'; // só nesta call — a próxima volta a tentar o L
               aicBadCycles = 0;
-              try { localStorage.setItem('dspeak-aic-model', 's'); } catch (e) {}
-              console.warn('[Mic] Voice Focus L pesado nesta máquina — trocando pro modelo S (leve).');
+              console.warn('[Mic] CPU sobrecarregada (sala cheia?) — Voice Focus desce pro modelo S nesta call.');
               ensureAicVoiceFocusNode(thisCtx).then((n) => {
                 attachEnhancer(n, 'Voice Focus S (leve, anti-picote)');
               }).catch((e) => {

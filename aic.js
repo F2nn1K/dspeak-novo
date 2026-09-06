@@ -12,7 +12,7 @@ const MODEL_URL = 'https://artifacts.ai-coustics.io/models/quail-vf-2-2-l-16khz/
 const MODEL_CACHE = path.join(__dirname, 'aic-cache', 'quail-vf-2-2-l-16khz.aicmodel');
 // Modelo S (leve): usado como degrau automático quando o L picota em PC fraco —
 // processar em tempo real na thread de áudio pesa, e o L não roda em qualquer máquina.
-const MODEL_URL_S = 'https://artifacts.ai-coustics.io/models/quail-vf-2-2-s-16khz/v6/quail_vf_2_2_s_16khz_gf70x7zf_v14.aicmodel';
+const MODEL_URL_S = 'https://artifacts.ai-coustics.io/models/quail-vf-2-2-s-16khz/v7/quail_vf_2_2_s_16khz_gf70x7zf_v14.aicmodel';
 const MODEL_CACHE_S = path.join(__dirname, 'aic-cache', 'quail-vf-2-2-s-16khz.aicmodel');
 
 function readLicense() {
